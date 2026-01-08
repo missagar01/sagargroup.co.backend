@@ -20,12 +20,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      # Copy code to SAME working directory (inner folder)
-      - name: Prepare app directory
-        run: |
-          APP_DIR="O2D-BatchCode-Lead-backend-aws"
-          mkdir -p "$APP_DIR"
-
       - name: Restore .env (NEVER DELETE)
         run: |
           APP_DIR="O2D-BatchCode-Lead-backend-aws"
@@ -47,81 +41,14 @@ jobs:
           cd O2D-BatchCode-Lead-backend-aws
           npm ci --no-audit --no-fund
 
-      - name: Start / Restart PM2 (FINAL)
+      - name: Start / Restart PM2
         run: |
           cd O2D-BatchCode-Lead-backend-aws
 
-          # Ensure old wrong app is gone
+          # delete old wrong app if exists
           pm2 delete o2d-backend || true
 
-          # Correct app
-          if pm2 describe o2d-lead-batch >/dev/null 2>&1; then
-            pm2 restart o2d-lead-batch --update-env --cwd "$(pwd)"
-          else
-            pm2 start server.cjs --name o2d-lead-batch --cwd "$(pwd)"
-          fi
-
-          pm2 save
-
-      - name: Health check
-        run: pm2 logs o2d-lead-batch --lines 40 --nostream
-name: Deploy to EC2 (PM2)
-
-on:
-  push:
-    branches: ["master"]
-  workflow_dispatch:
-
-concurrency:
-  group: deploy-o2d-lead-batch
-  cancel-in-progress: true
-
-jobs:
-  deploy:
-    runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 45
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      # Copy code to SAME working directory (inner folder)
-      - name: Prepare app directory
-        run: |
-          APP_DIR="O2D-BatchCode-Lead-backend-aws"
-          mkdir -p "$APP_DIR"
-
-      - name: Restore .env (NEVER DELETE)
-        run: |
-          APP_DIR="O2D-BatchCode-Lead-backend-aws"
-          if [ ! -f "/home/ubuntu/secrets/o2d-backend/.env" ]; then
-            echo "❌ Missing /home/ubuntu/secrets/o2d-backend/.env"
-            exit 1
-          fi
-          cp /home/ubuntu/secrets/o2d-backend/.env "$APP_DIR/.env"
-          chmod 600 "$APP_DIR/.env"
-          echo "✅ .env restored"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install dependencies
-        run: |
-          cd O2D-BatchCode-Lead-backend-aws
-          npm ci --no-audit --no-fund
-
-      - name: Start / Restart PM2 (FINAL)
-        run: |
-          cd O2D-BatchCode-Lead-backend-aws
-
-          # Ensure old wrong app is gone
-          pm2 delete o2d-backend || true
-
-          # Correct app
+          # correct app
           if pm2 describe o2d-lead-batch >/dev/null 2>&1; then
             pm2 restart o2d-lead-batch --update-env --cwd "$(pwd)"
           else
