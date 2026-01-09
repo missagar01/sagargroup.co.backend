@@ -2,6 +2,7 @@ const { StatusCodes } = require('http-status-codes');
 const hotCoilService = require('../services/hotCoil.service');
 const { buildResponse } = require('../utils/apiResponse');
 const ApiError = require('../utils/apiError');
+const smsRegisterRepository = require('../repositories/smsRegister.repository');
 
 const parseIntegerParam = (value, fieldName) => {
   if (value === undefined) {
@@ -24,6 +25,22 @@ const normalizeStringParam = (value) => {
 
 const createEntry = async (req, res) => {
   const payload = await hotCoilService.createHotCoil(req.body);
+  
+  // Send WhatsApp notification
+  const whatsappService = require('../utils/whatsapp.service');
+  
+  // Fetch SMS register data for the message
+  if (payload.sms_short_code) {
+    const smsRegisterRows = await smsRegisterRepository.findSmsRegisters({
+      uniqueCode: payload.sms_short_code
+    });
+    const smsData = smsRegisterRows.length > 0 ? smsRegisterRows[0] : null;
+    
+    whatsappService.sendHotCoilNotification(payload, smsData).catch((error) => {
+      console.error('Error sending WhatsApp notification for Hot Coil:', error);
+    });
+  }
+  
   res.status(StatusCodes.CREATED).json(buildResponse('Hot coil entry recorded', payload));
 };
 

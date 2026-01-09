@@ -2,6 +2,7 @@ const { StatusCodes } = require('http-status-codes');
 const pipeMillService = require('../services/pipeMill.service');
 const { buildResponse } = require('../utils/apiResponse');
 const ApiError = require('../utils/apiError');
+const reCoilerRepository = require('../repositories/reCoiler.repository');
 
 const parseIntegerParam = (value, fieldName) => {
   if (value === undefined) {
@@ -24,6 +25,22 @@ const normalizeStringParam = (value) => {
 
 const createEntry = async (req, res) => {
   const payload = await pipeMillService.createPipeMill(req.body);
+  
+  // Send WhatsApp notification
+  const whatsappService = require('../utils/whatsapp.service');
+  
+  // Fetch ReCoiler data for the message
+  if (payload.recoiler_short_code) {
+    const reCoilerRows = await reCoilerRepository.findReCoilerEntries({
+      uniqueCode: payload.recoiler_short_code
+    });
+    const reCoilerData = reCoilerRows.length > 0 ? reCoilerRows[0] : null;
+    
+    whatsappService.sendPipeMillNotification(payload, reCoilerData).catch((error) => {
+      console.error('Error sending WhatsApp notification for Pipe Mill:', error);
+    });
+  }
+  
   res.status(StatusCodes.CREATED).json(buildResponse('Pipe Mill entry recorded', payload));
 };
 

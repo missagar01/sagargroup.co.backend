@@ -24,6 +24,13 @@ const normalizeStringParam = (value) => {
 
 const createEntry = async (req, res) => {
   const payload = await smsRegisterService.createSmsRegister(req.body);
+  
+  // Send WhatsApp notification
+  const whatsappService = require('../utils/whatsapp.service');
+  whatsappService.sendSmsRegisterNotification(payload).catch((error) => {
+    console.error('Error sending WhatsApp notification for SMS Register:', error);
+  });
+  
   res.status(StatusCodes.CREATED).json(buildResponse('SMS register entry recorded', payload));
 };
 

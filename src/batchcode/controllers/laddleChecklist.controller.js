@@ -24,6 +24,13 @@ const normalizeStringParam = (value) => {
 
 const createEntry = async (req, res) => {
   const payload = await laddleChecklistService.createLaddleChecklist(req.body);
+  
+  // Send WhatsApp notification
+  const whatsappService = require('../utils/whatsapp.service');
+  whatsappService.sendLaddleNotification(payload).catch((error) => {
+    console.error('Error sending WhatsApp notification for Laddle Checklist:', error);
+  });
+  
   res.status(StatusCodes.CREATED).json(buildResponse('Laddle checklist entry recorded', payload));
 };
 

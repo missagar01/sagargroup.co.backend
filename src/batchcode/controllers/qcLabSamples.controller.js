@@ -24,6 +24,13 @@ const normalizeStringParam = (value) => {
 
 const createSample = async (req, res) => {
   const payload = await qcLabSamplesService.createSample(req.body);
+  
+  // Send WhatsApp notification
+  const whatsappService = require('../utils/whatsapp.service');
+  whatsappService.sendQcLabNotification(payload).catch((error) => {
+    console.error('Error sending WhatsApp notification for QC Lab Sample:', error);
+  });
+  
   res.status(StatusCodes.CREATED).json(buildResponse('QC lab sample recorded', payload));
 };
 

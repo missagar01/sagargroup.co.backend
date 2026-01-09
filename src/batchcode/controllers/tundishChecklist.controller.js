@@ -24,6 +24,14 @@ const normalizeStringParam = (value) => {
 
 const createEntry = async (req, res) => {
   const payload = await tundishChecklistService.createTundishChecklist(req.body);
+  
+  // Send WhatsApp notification
+  const whatsappService = require('../utils/whatsapp.service');
+  whatsappService.sendTundishNotification(payload).catch((error) => {
+    console.error('Error sending WhatsApp notification for Tundish Checklist:', error);
+  });
+  console.log('Tundish checklist entry recorded', payload);
+  
   res.status(StatusCodes.CREATED).json(buildResponse('Tundish checklist entry recorded', payload));
 };
 

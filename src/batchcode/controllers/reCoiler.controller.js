@@ -2,6 +2,7 @@ const { StatusCodes } = require('http-status-codes');
 const reCoilerService = require('../services/reCoiler.service');
 const { buildResponse } = require('../utils/apiResponse');
 const ApiError = require('../utils/apiError');
+const hotCoilRepository = require('../repositories/hotCoil.repository');
 
 const parseIntegerParam = (value, fieldName) => {
   if (value === undefined) {
@@ -24,6 +25,25 @@ const normalizeStringParam = (value) => {
 
 const createEntry = async (req, res) => {
   const payload = await reCoilerService.createReCoiler(req.body);
+  
+  // Send WhatsApp notification
+  const whatsappService = require('../utils/whatsapp.service');
+  const records = Array.isArray(payload) ? payload : [payload];
+  
+  for (const record of records) {
+    if (!record.error && record.hot_coiler_short_code) {
+      // Fetch hot coil data for the message
+      const hotCoilRows = await hotCoilRepository.findHotCoilEntries({
+        smsShortCode: record.hot_coiler_short_code
+      });
+      const hotCoilData = hotCoilRows.length > 0 ? hotCoilRows[0] : null;
+      
+      whatsappService.sendReCoilerNotification(record, hotCoilData).catch((error) => {
+        console.error('Error sending WhatsApp notification for ReCoiler:', error);
+      });
+    }
+  }
+  
   res.status(StatusCodes.CREATED).json(buildResponse('Re-Coiler entry recorded', payload));
 };
 
