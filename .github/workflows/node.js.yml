@@ -21,35 +21,43 @@ jobs:
         with:
           fetch-depth: 1
 
-      # 2️⃣ Set fixed APP_DIR (NO auto find, NO mistake)
+      # 2️⃣ Set correct APP_DIR
       - name: Set APP_DIR
         run: |
           APP_DIR="/home/ubuntu/actions-runner/_work/O2D-BatchCode-Lead-backend-aws/O2D-BatchCode-Lead-backend-aws"
           echo "APP_DIR=$APP_DIR" >> $GITHUB_ENV
           echo "✅ APP_DIR set to $APP_DIR"
 
-      # 3️⃣ Ensure .env exists (DO NOT COPY / DO NOT DELETE)
-      - name: Verify .env exists (SAFE)
+      # 3️⃣ Ensure .env exists safely (COPY ONLY IF MISSING)
+      - name: Ensure .env exists (SAFE COPY)
         run: |
           if [ ! -f "$APP_DIR/.env" ]; then
-            echo "❌ .env NOT FOUND in $APP_DIR"
-            echo "Create it manually on server once. GitHub will never touch it."
-            exit 1
-          fi
-          chmod 600 "$APP_DIR/.env"
-          echo "✅ .env exists and is safe"
+            echo "⚠️ .env missing in app directory"
+            echo "➡️ Copying from /home/ubuntu/secrets/o2d-backend/.env"
 
-      # 4️⃣ Verify required env keys (read-only check)
+            if [ ! -f "/home/ubuntu/secrets/o2d-backend/.env" ]; then
+              echo "❌ Source .env missing in /home/ubuntu/secrets/o2d-backend/"
+              exit 1
+            fi
+
+            cp /home/ubuntu/secrets/o2d-backend/.env "$APP_DIR/.env"
+            chmod 600 "$APP_DIR/.env"
+            echo "✅ .env copied safely"
+          else
+            echo "✅ .env already exists — NOT touching it"
+          fi
+
+      # 4️⃣ Verify required env keys (read-only)
       - name: Verify required ENV keys
         run: |
           cd "$APP_DIR"
-
           echo "🔍 Checking MAYTAPI variables..."
+
           grep -q "MAYTAPI_PRODUCT_ID=" .env || (echo "❌ MAYTAPI_PRODUCT_ID missing" && exit 1)
           grep -q "MAYTAPI_PHONE_ID=" .env || (echo "❌ MAYTAPI_PHONE_ID missing" && exit 1)
           grep -q "MAYTAPI_TOKEN=" .env || (echo "❌ MAYTAPI_TOKEN missing" && exit 1)
 
-          echo "✅ MAYTAPI env verified (values hidden)"
+          echo "✅ MAYTAPI env verified"
 
       # 5️⃣ Node setup
       - name: Setup Node.js
@@ -63,7 +71,7 @@ jobs:
           cd "$APP_DIR"
           npm ci --no-audit --no-fund
 
-      # 7️⃣ PM2 restart (NO env reset)
+      # 7️⃣ PM2 start / restart
       - name: Start / Restart PM2
         run: |
           cd "$APP_DIR"
