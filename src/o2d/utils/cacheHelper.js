@@ -31,6 +31,9 @@ function generateCacheKey(prefix, params = {}) {
  * Get cached data
  */
 async function getCached(key) {
+  if (!redisClient.isConnected()) {
+    return null;
+  }
   try {
     const cached = await redisClient.get(key);
     if (cached) {
@@ -49,6 +52,9 @@ async function getCached(key) {
  * Set cached data with TTL
  */
 async function setCached(key, data, ttl = DEFAULT_TTL.PENDING) {
+  if (!redisClient.isConnected()) {
+    return;
+  }
   try {
     await redisClient.setEx(key, ttl, JSON.stringify(data));
   } catch (error) {
