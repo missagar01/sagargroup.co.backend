@@ -122,15 +122,15 @@ SELECT
          WHERE t.entity_code = 'SR'
            AND t.series = 'SA'
            AND t.div_code = 'PM'
-           AND t.vrdate >= TRUNC(SYSDATE,'MM')
-           AND t.vrdate < TRUNC(SYSDATE) + 1
+           AND t.vrdate >= TO_DATE(:p_from_date, 'YYYY-MM-DD')
+           AND t.vrdate < TO_DATE(:p_to_date, 'YYYY-MM-DD') + 1
          GROUP BY t.emp_code, t.item_name, t.contract_vrno,
                   t.qtyissued, t.fc_rate, t.contract_rate, t.afrate3, t.afrate4
        )
      ), 0
    ) AS monthly_gd,
 
-   /* Daily GD */
+   /* Daily GD - Last day of selected month */
    COALESCE(
      (
        SELECT ROUND(SUM(summary) / NULLIF(SUM(qtyissued), 0), 0)
@@ -144,8 +144,8 @@ SELECT
          WHERE t.entity_code = 'SR'
            AND t.series = 'SA'
            AND t.div_code = 'PM'
-           AND t.vrdate >= TRUNC(SYSDATE)
-           AND t.vrdate < TRUNC(SYSDATE) + 1
+           AND t.vrdate >= TO_DATE(:p_to_date, 'YYYY-MM-DD')
+           AND t.vrdate < TO_DATE(:p_to_date, 'YYYY-MM-DD') + 1
          GROUP BY t.emp_code, t.item_name, t.contract_vrno,
                   t.qtyissued, t.fc_rate, t.contract_rate, t.afrate3, t.afrate4
        )
@@ -162,7 +162,8 @@ where t.entity_code='SR'
       and t.series='SA'
       and t.div_code='PM'
       and t.acc_vrno<>'CANCELLED'
-      and t.vrdate>=trunc(sysdate,'MM'))
+      and t.vrdate >= TO_DATE(:p_from_date, 'YYYY-MM-DD')
+      and t.vrdate < TO_DATE(:p_to_date, 'YYYY-MM-DD') + 1)
 `;
 
 const PENDING_ORDERS_STATS_QUERY = `
@@ -249,7 +250,7 @@ async function getDashboardData({
         connection.execute(BASE_DASHBOARD_QUERY, binds, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         }),
-        connection.execute(MONTHLY_STATS_QUERY, {}, {
+        connection.execute(MONTHLY_STATS_QUERY, summaryDateBinds, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         }),
         connection.execute(PENDING_ORDERS_STATS_QUERY, {}, {
@@ -264,7 +265,7 @@ async function getDashboardData({
         connection.execute(SAUDA_RATE_TREND_QUERY, summaryDateBinds, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         }),
-        connection.execute(GD_QUERY, {}, {
+        connection.execute(GD_QUERY, summaryDateBinds, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         })
       ]);
