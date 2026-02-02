@@ -1,232 +1,97 @@
 const { Pool } = require("pg");
 const dotenv = require("dotenv");
-const { getLocalPostgresPort, isTunnelActive } = require("./sshTunnel");
+const path = require("path");
 
-dotenv.config();
+dotenv.config({ path: path.join(__dirname, "../.env") });
 
 let pool;
-let loginPool; // Separate pool for login database
 
-function createPool() {
-  // AWS RDS requires SSL, so enable it automatically for RDS hosts
+/**
+ * Singleton pool instance
+ */
+function getPgPool() {
+  if (pool) return pool;
+
   const dbHost = process.env.DB_HOST || "";
   const isRDS = dbHost.includes("rds.amazonaws.com");
   const useSSL = isRDS || String(process.env.DB_SSL || "").toLowerCase() === "true";
-  
-  // Check if we should use SSH tunnel (if SSH_HOST is set and tunnel is actually active)
-  // For AWS RDS, don't use SSH tunnel - connect directly
-  const useTunnel = process.env.SSH_HOST && isTunnelActive() && !isRDS;
-  
-  const host = useTunnel ? '127.0.0.1' : dbHost;
-  const port = useTunnel ? getLocalPostgresPort() : (Number(process.env.DB_PORT) || 5432);
 
-  // If pool exists, check if it's still valid
-  if (pool) {
-    // Check if pool is already ended or ending
-    if (pool._ending || pool._ended) {
-      pool = null;
-    } else {
-      // Check if pool is still connected
-      try {
-        const currentHost = pool.options?.host || pool._clients?.[0]?.host;
-        if (currentHost !== host) {
-          console.log(`🔄 Recreating PostgreSQL pool (tunnel status changed)`);
-          pool = null;
-        } else {
-          return pool;
-        }
-      } catch (e) {
-        // Pool is invalid, recreate it
-        pool = null;
-      }
-    }
-  }
+  console.log(`📡 Connecting to PostgreSQL: ${dbHost}`);
 
-  if (useTunnel) {
-    console.log(`📡 PostgreSQL: Using SSH tunnel (localhost:${port})`);
-  } else {
-    console.log(`📡 PostgreSQL: Using direct connection (${host}:${port})${useSSL ? ' (SSL enabled)' : ''}`);
-  }
-
-  // Main pool uses DB_* variables (for batchcode and lead-to-order)
   pool = new Pool({
-    host,
-    port,
+    host: dbHost,
+    port: Number(process.env.DB_PORT) || 5432,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
     ssl: useSSL ? { rejectUnauthorized: false } : false,
-    max: 10,
-    connectionTimeoutMillis: isRDS ? 20000 : 15000, // Longer timeout for RDS
+    max: 20, // Increased for better concurrency
     idleTimeoutMillis: 30000,
-    statement_timeout: 30000,
+    connectionTimeoutMillis: 10000,
+  });
+
+  pool.on("error", (err) => {
+    console.error("❌ Unexpected error on idle client", err);
+    pool = null; // Force recreation on next use if pool breaks
   });
 
   return pool;
 }
 
-function getPgPool() {
-  return createPool();
-}
-
+/**
+ * Execute a query with automatic connection handling
+ */
 async function pgQuery(text, params = []) {
-  let client;
-  let retries = 2;
-  
-  while (retries >= 0) {
-    try {
-      const pool = getPgPool();
-      client = await pool.connect();
-      const result = await client.query(text, params);
-      client.release();
-      return result;
-    } catch (err) {
-      if (client) {
-        try {
-          client.release();
-        } catch (e) {
-          // Ignore release errors
-        }
-      }
-      
-      // If connection error and retries left, reset pool and retry
-      if (retries > 0 && (err.message.includes("terminated") || err.message.includes("ECONNREFUSED") || err.message.includes("timeout") || err.message.includes("Connection terminated"))) {
-        console.warn(`⚠️ PostgreSQL connection failed, retrying... (${retries} attempts left)`, err.message);
-        resetPool();
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        retries--;
-      } else {
-        throw err;
-      }
+  const start = Date.now();
+  try {
+    const result = await getPgPool().query(text, params);
+    const duration = Date.now() - start;
+    if (duration > 1000) {
+      console.warn(`⏳ Slow Query (${duration}ms): ${text.substring(0, 100)}...`);
     }
+    return result;
+  } catch (err) {
+    console.error("❌ PostgreSQL Query Error:", err.message);
+    throw err;
   }
 }
 
-function createLoginPool() {
-  // AWS RDS requires SSL, so enable it by default for RDS hosts
+/**
+ * Login database pool (if different)
+ */
+let loginPool;
+function getLoginPool() {
+  if (loginPool) return loginPool;
+
   const dbHost = process.env.DB_HOST || "";
   const isRDS = dbHost.includes("rds.amazonaws.com");
   const useSSL = isRDS || String(process.env.DB_SSL || "").toLowerCase() === "true";
-  
-  // For RDS, don't use SSH tunnel - connect directly
-  // SSH tunnel is only for on-premise servers
-  const useTunnel = process.env.SSH_HOST && isTunnelActive() && !isRDS;
-  
-  const host = useTunnel ? '127.0.0.1' : dbHost;
-  const port = useTunnel ? getLocalPostgresPort() : (Number(process.env.DB_PORT) || 5432);
-  
-  // Login database uses DB_NAME
-  const loginDatabase = process.env.DB_NAME;
 
-  // If pool exists but connection config changed, recreate it
-  if (loginPool) {
-    const currentHost = loginPool.options?.host || loginPool._clients?.[0]?.host;
-    if (currentHost !== host) {
-      console.log(`🔄 Recreating Login PostgreSQL pool (tunnel status changed)`);
-      loginPool.end().catch(() => {});
-      loginPool = null;
-    } else {
-      return loginPool;
-    }
-  }
-
-  if (useTunnel) {
-    console.log(`📡 Login Database: Using SSH tunnel (localhost:${port}) - Database: ${loginDatabase}`);
-  } else {
-    console.log(`📡 Login Database: Using direct connection (${host}:${port}) - Database: ${loginDatabase}${useSSL ? ' (SSL enabled)' : ''}`);
-  }
-
-  // Login pool uses DB_* credentials
   loginPool = new Pool({
-    host,
-    port,
+    host: dbHost,
+    port: Number(process.env.DB_PORT) || 5432,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    database: loginDatabase,
+    database: process.env.DB_NAME,
     ssl: useSSL ? { rejectUnauthorized: false } : false,
-    connectionTimeoutMillis: isRDS ? 20000 : 15000, // Longer timeout for RDS
-    idleTimeoutMillis: 30000,
-    statement_timeout: 30000,
-    max: 10,
+    max: 5,
   });
 
   return loginPool;
 }
 
-function getLoginPool() {
-  return createLoginPool();
-}
-
 async function loginQuery(text, params = []) {
-  let client;
-  let retries = 2;
-  
-  while (retries >= 0) {
-    try {
-      client = await getLoginPool().connect();
-      const result = await client.query(text, params);
-      client.release();
-      return result;
-    } catch (err) {
-      if (client) {
-        try {
-          client.release();
-        } catch (e) {
-          // Ignore release errors
-        }
-      }
-      
-      // If connection error and retries left, reset pool and retry
-      if (retries > 0 && (err.message.includes("terminated") || err.message.includes("ECONNREFUSED") || err.message.includes("timeout"))) {
-        console.warn(`⚠️ Login DB connection failed, retrying... (${retries} attempts left)`);
-        resetPool();
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        retries--;
-      } else {
-        throw err;
-      }
-    }
-  }
+  return getLoginPool().query(text, params);
 }
 
 async function closePgPool() {
-  if (pool) {
-    await pool.end();
-    pool = null;
-  }
-  if (loginPool) {
-    await loginPool.end();
-    loginPool = null;
-  }
+  if (pool) { await pool.end(); pool = null; }
+  if (loginPool) { await loginPool.end(); loginPool = null; }
 }
 
 function resetPool() {
-  // Don't end the pool - just mark it for recreation on next use
-  // This prevents "Cannot use a pool after calling end" errors
-  if (pool) {
-    try {
-      // Only end if pool is actually broken
-      if (pool._ending || pool._ended) {
-        pool = null;
-      } else {
-        // Just mark for recreation, don't end it
-        pool = null;
-      }
-    } catch (e) {
-      pool = null;
-    }
-  }
-  if (loginPool) {
-    try {
-      if (loginPool._ending || loginPool._ended) {
-        loginPool = null;
-      } else {
-        loginPool = null;
-      }
-    } catch (e) {
-      loginPool = null;
-    }
-  }
+  pool = null;
+  loginPool = null;
 }
 
 module.exports = {

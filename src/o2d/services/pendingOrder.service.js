@@ -25,7 +25,7 @@ async function getPendingOrders() {
             and t.div_code='PM'
             and t.qtyorder - NVL(t.qtyexecute,0) > 0
             and t.closeddate is null
-      order by t.vrdate asc, t.vrno asc
+      order by lhs_utility.get_name('emp_code',t.emp_code) asc, lhs_utility.get_name('acc_code',t.acc_code) asc
     `;
             const result = await connection.execute(query, [], { outFormat: oracledb.OUT_FORMAT_OBJECT });
             return result.rows;

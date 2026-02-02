@@ -82,6 +82,10 @@ function createTunnelServer(serviceName, localPort, remoteHost, remotePort) {
     const server = net.createServer((localSocket) => {
       console.log(`🔗 Local connection received for ${serviceName}`);
 
+      // Set socket timeout to detect stale connections
+      localSocket.setTimeout(300000); // 5 minutes
+      localSocket.setKeepAlive(true, 60000); // Enable TCP keepalive
+
       sshClient.forwardOut(
         localSocket.localAddress || '127.0.0.1',
         localSocket.localPort || 0,
@@ -89,18 +93,42 @@ function createTunnelServer(serviceName, localPort, remoteHost, remotePort) {
         remotePort,
         (err, remoteStream) => {
           if (err) {
-            console.error(`❌ SSH forward error for ${serviceName}:`, err);
+            console.error(`❌ SSH forward error for ${serviceName}:`, err.message);
             localSocket.destroy();
             return;
           }
 
           console.log(`✅ SSH forward established for ${serviceName}`);
+
+          // Set up error handlers before piping
           localSocket.on('error', (socketErr) => {
-            console.error(`⚠️ Local socket error (${serviceName}):`, socketErr.message);
+            if (socketErr.code !== 'ECONNRESET') {
+              console.error(`⚠️ Local socket error (${serviceName}):`, socketErr.message);
+            }
+            remoteStream.end();
           });
+
+          localSocket.on('timeout', () => {
+            console.warn(`⚠️ Local socket timeout (${serviceName}), closing connection`);
+            localSocket.destroy();
+            remoteStream.end();
+          });
+
           remoteStream.on('error', (remoteErr) => {
-            console.error(`⚠️ Remote stream error (${serviceName}):`, remoteErr.message);
+            if (remoteErr.code !== 'ECONNRESET') {
+              console.error(`⚠️ Remote stream error (${serviceName}):`, remoteErr.message);
+            }
+            localSocket.end();
           });
+
+          remoteStream.on('close', () => {
+            localSocket.end();
+          });
+
+          localSocket.on('close', () => {
+            remoteStream.end();
+          });
+
           localSocket.pipe(remoteStream).pipe(localSocket);
         }
       );
@@ -129,7 +157,7 @@ function getSSHPrivateKey() {
   if (process.env.SSH_PRIVATE_KEY) {
     return process.env.SSH_PRIVATE_KEY;
   }
-  
+
   // Try SSH_KEY_PATH (path to key file)
   if (process.env.SSH_KEY_PATH) {
     const keyPath = path.resolve(process.env.SSH_KEY_PATH);
@@ -145,7 +173,7 @@ function getSSHPrivateKey() {
       return null;
     }
   }
-  
+
   // Try default key path ~/.ssh/o2d_tunnel_key
   const defaultKeyPath = path.join(process.env.HOME || process.env.USERPROFILE || '', '.ssh', 'o2d_tunnel_key');
   if (fs.existsSync(defaultKeyPath)) {
@@ -156,7 +184,7 @@ function getSSHPrivateKey() {
       return null;
     }
   }
-  
+
   return null;
 }
 
@@ -244,15 +272,25 @@ async function establishTunnels() {
       host: SSH_HOST,
       port: SSH_PORT,
       username: SSH_USER,
-      readyTimeout: 30000,
-      keepaliveInterval: 10000,
-      keepaliveCountMax: 5,
+      readyTimeout: 60000, // Increased from 30s to 60s
+      keepaliveInterval: 5000, // More frequent keepalives (5s instead of 10s)
+      keepaliveCountMax: 10, // Increased from 5 to 10
+      // Add TCP keepalive to detect dead connections faster
+      sock: undefined, // Will use default socket
+      // Increase timeout for slower connections
+      timeout: 60000,
       algorithms: {
         kex: [
           'ecdh-sha2-nistp256',
           'ecdh-sha2-nistp384',
           'ecdh-sha2-nistp521',
           'diffie-hellman-group14-sha256',
+          'diffie-hellman-group-exchange-sha256',
+        ],
+        cipher: [
+          'aes128-ctr',
+          'aes192-ctr',
+          'aes256-ctr',
         ],
       },
     };
@@ -309,7 +347,7 @@ async function closeSSHTunnel() {
 
     let closedCount = 0;
     const totalServers = (oracleTunnelServer ? 1 : 0) + (postgresTunnelServer ? 1 : 0);
-    
+
     const checkComplete = () => {
       closedCount++;
       if (closedCount >= totalServers || totalServers === 0) {

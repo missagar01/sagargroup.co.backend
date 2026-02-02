@@ -9,6 +9,9 @@ const DEFAULT_TTL = {
   TIMELINE: 60,
 };
 
+// In-memory fallback
+const memoryCache = new Map();
+
 function generateCacheKey(prefix, params = {}) {
   const sorted = Object.keys(params)
     .sort()
@@ -25,24 +28,56 @@ function generateCacheKey(prefix, params = {}) {
 }
 
 async function getCached(key) {
-  if (!redis.isAvailable()) return null;
-
-  try {
-    const value = await redis.get(key);
-    return value ? JSON.parse(value) : null;
-  } catch {
-    return null; // fail silently
+  // Try Redis first
+  if (redis.isAvailable()) {
+    try {
+      const value = await redis.get(key);
+      if (value) return JSON.parse(value);
+    } catch {
+      // ignore
+    }
   }
+
+  // Fallback to memory
+  const mem = memoryCache.get(key);
+  if (mem && mem.expiry > Date.now()) {
+    return mem.data;
+  } else if (mem) {
+    memoryCache.delete(key);
+  }
+
+  return null;
 }
 
 async function setCached(key, data, ttl = DEFAULT_TTL.PENDING) {
-  if (!redis.isAvailable()) return;
-
-  try {
-    redis.setEx(key, ttl, JSON.stringify(data)); // intentionally not awaited
-  } catch {
-    /* ignore */
+  // Set in Redis
+  if (redis.isAvailable()) {
+    try {
+      redis.setEx(key, ttl, JSON.stringify(data));
+    } catch {
+      // ignore
+    }
   }
+
+  // Set in memory
+  memoryCache.set(key, {
+    data,
+    expiry: Date.now() + (ttl * 1000)
+  });
+}
+
+async function delCached(key) {
+  // Del in Redis
+  if (redis.isAvailable()) {
+    try {
+      await redis.del(key);
+    } catch {
+      // ignore
+    }
+  }
+
+  // Del in memory
+  memoryCache.delete(key);
 }
 
 async function withCache(key, ttl, fetchFn) {
@@ -50,7 +85,7 @@ async function withCache(key, ttl, fetchFn) {
   if (cached !== null) return cached;
 
   const fresh = await fetchFn();
-  setCached(key, fresh, ttl);
+  await setCached(key, fresh, ttl);
   return fresh;
 }
 
@@ -58,6 +93,7 @@ module.exports = {
   generateCacheKey,
   getCached,
   setCached,
+  delCached,
   withCache,
   DEFAULT_TTL,
 };

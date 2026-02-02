@@ -105,20 +105,64 @@ async function cleanup() {
   if (pool) {
     try {
       await pool.close(0);
-    } catch {}
+    } catch { }
     pool = null;
   }
   if (sshTunnelActive) {
     try {
       await closeSSHTunnel();
-    } catch {}
+    } catch { }
     sshTunnelActive = false;
   }
 }
 
 async function getConnection() {
-  if (!pool) await initPool();
-  return pool.getConnection();
+  const maxRetries = 3;
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      if (!pool) await initPool();
+      const connection = await pool.getConnection();
+
+      // Test the connection is actually working
+      try {
+        await connection.execute("SELECT 1 FROM DUAL");
+        return connection;
+      } catch (testErr) {
+        await connection.close().catch(() => { });
+        throw testErr;
+      }
+    } catch (err) {
+      lastError = err;
+      const isConnectionError =
+        err.message?.includes('ORA-12537') || // TNS:connection closed
+        err.message?.includes('ORA-12541') || // Cannot connect
+        err.message?.includes('NJS-500') ||   // connection closed or broken
+        err.message?.includes('ECONNRESET');
+
+      if (isConnectionError && attempt < maxRetries) {
+        console.warn(`⚠️ Oracle connection attempt ${attempt}/${maxRetries} failed: ${err.message}`);
+        console.log(`🔄 Retrying in ${attempt}s...`);
+
+        // Reset pool on connection errors
+        if (pool) {
+          try {
+            await pool.close(0);
+          } catch { }
+          pool = null;
+          poolInitializing = false;
+          poolInitError = null;
+        }
+
+        await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  throw lastError;
 }
 
 async function closePool() {
