@@ -15,11 +15,12 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      # 1️⃣ Checkout code (no secrets here)
-      - name: Checkout repository
+      # 1️⃣ Checkout repository (CRITICAL FIX)
+      - name: Checkout repository (SAFE – no cleanup)
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          clean: false        # 🔥 MOST IMPORTANT LINE (prevents .env deletion)
 
       # 2️⃣ Define fixed app directory
       - name: Set APP_DIR
@@ -35,33 +36,33 @@ jobs:
             echo "⚠️ .env not found in app dir"
 
             if [ ! -f "/home/ubuntu/secrets/o2d-backend/.env" ]; then
-              echo "❌ Source .env missing in secrets folder"
+              echo "❌ Backup .env missing"
               exit 1
             fi
 
             cp /home/ubuntu/secrets/o2d-backend/.env "$APP_DIR/.env"
             chmod 600 "$APP_DIR/.env"
-            echo "✅ .env copied securely"
+            echo "✅ .env restored from secrets"
           else
             echo "✅ .env already exists — untouched"
           fi
 
-      # 3.5️⃣ Verify .env integrity (extra safety)
+      # 4️⃣ Verify .env integrity (hard safety)
       - name: Verify .env integrity
         run: |
           if [ ! -s "$APP_DIR/.env" ]; then
-            echo "❌ .env missing or empty — aborting deploy"
+            echo "❌ .env missing or empty — stopping deploy"
             exit 1
           fi
-          echo "✅ .env integrity verified"
+          echo "✅ .env verified and safe"
 
-      # 4️⃣ Setup Node.js
+      # 5️⃣ Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # 5️⃣ Install system dependencies (Oracle needs this)
+      # 6️⃣ Install system dependencies
       - name: Install system dependencies
         run: |
           sudo apt-get update || true
@@ -69,14 +70,14 @@ jobs:
             || sudo apt-get install -y libaio1t64 unzip wget
           echo "✅ System dependencies installed"
 
-      # 6️⃣ Install npm dependencies
+      # 7️⃣ Install npm dependencies
       - name: Install npm dependencies
         run: |
           cd "$APP_DIR"
           npm ci --no-audit --no-fund
 
-      # 7️⃣ Start / Restart PM2 (ONLY ONE APP)
-      - name: Start / Restart PM2 (o2d-backend)
+      # 8️⃣ Restart PM2 (NO ENV RESET)
+      - name: Restart PM2 safely
         run: |
           cd "$APP_DIR"
 
@@ -88,9 +89,9 @@ jobs:
             --update-env
 
           pm2 save
-          echo "✅ PM2 o2d-backend started"
+          echo "✅ PM2 restarted safely"
 
-      # 8️⃣ Health check (local + public)
+      # 9️⃣ Health check
       - name: Health check
         run: |
           echo "⏳ Waiting for port 3004..."

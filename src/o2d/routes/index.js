@@ -5,6 +5,7 @@ const pendingOrderRoutes = require("./pendingOrder.routes.js");
 const sizeMasterRoutes = require("./sizeMaster.routes.js");
 const clientRoutes = require("./client.routes.js");
 const followupRoutes = require("./followup.routes.js");
+const deliveryRoutes = require("./delivery.routes.js");
 
 const router = Router();
 
@@ -14,6 +15,7 @@ router.use("/orders", pendingOrderRoutes);
 router.use("/size-master", sizeMasterRoutes);
 router.use("/client", clientRoutes);
 router.use("/followup", followupRoutes);
+router.use("/delivery", deliveryRoutes);
 
 module.exports = router;
 
