@@ -35,15 +35,21 @@ WITH raw_data AS (
         t.contract_vrdate,
         t.contract_qty,
         t.vrdate
+),
+latest_date AS (
+    SELECT MAX(TRUNC(vrdate)) as max_dt FROM raw_data
 )
 SELECT 
     -- Monthly/Period Stats (Based on filtered range)
     COUNT(*) AS monthly_total,
     SUM(CASE WHEN delivery_late = 'Yes' THEN 1 ELSE 0 END) AS monthly_late,
     
-    -- Daily Stats (Last Day of the selected range)
-    SUM(CASE WHEN TRUNC(vrdate) = TRUNC(TO_DATE(:endDate, 'YYYY-MM-DD')) THEN 1 ELSE 0 END) AS daily_total,
-    SUM(CASE WHEN delivery_late = 'Yes' AND TRUNC(vrdate) = TRUNC(TO_DATE(:endDate, 'YYYY-MM-DD')) THEN 1 ELSE 0 END) AS daily_late
+    -- Daily Stats (Latest Active Date in range)
+    SUM(CASE WHEN TRUNC(vrdate) = (SELECT max_dt FROM latest_date) THEN 1 ELSE 0 END) AS daily_total,
+    SUM(CASE WHEN delivery_late = 'Yes' AND TRUNC(vrdate) = (SELECT max_dt FROM latest_date) THEN 1 ELSE 0 END) AS daily_late,
+    
+    -- Return the max date for reference (Wrapped in MAX to satisfy aggregate rule)
+    MAX((SELECT TO_CHAR(max_dt, 'YYYY-MM-DD') FROM latest_date)) as daily_date
 FROM raw_data
 `;
 
@@ -56,7 +62,7 @@ async function getDeliveryStats({ startDate, endDate } = {}) {
     const p_start = startDate || defaultStart;
     const p_end = endDate || defaultEnd;
 
-    const cacheKey = generateCacheKey("delivery_stats_v3", { p_start, p_end });
+    const cacheKey = generateCacheKey("delivery_stats_v4", { p_start, p_end });
 
     return await withCache(cacheKey, DEFAULT_TTL.DASHBOARD, async () => {
         let connection;
@@ -77,7 +83,6 @@ async function getDeliveryStats({ startDate, endDate } = {}) {
             // Extract Monthly/Period Stats
             const monthlyTotal = row.MONTHLY_TOTAL || 0;
             const monthlyLate = row.MONTHLY_LATE || 0;
-            const monthlyOnTime = monthlyTotal - monthlyLate;
 
             let monthlyScore = 0;
             if (monthlyTotal > 0) {
@@ -85,10 +90,10 @@ async function getDeliveryStats({ startDate, endDate } = {}) {
                 monthlyScore = Math.round((monthlyLate / monthlyTotal) * 100);
             }
 
-            // Extract Daily Stats (Last day of range)
+            // Extract Daily Stats (Latest Active Date)
             const dailyTotal = row.DAILY_TOTAL || 0;
             const dailyLate = row.DAILY_LATE || 0;
-            const dailyOnTime = dailyTotal - dailyLate;
+            const dailyDate = row.DAILY_DATE || "No Data";
 
             let dailyScore = 0;
             if (dailyTotal > 0) {
@@ -99,16 +104,17 @@ async function getDeliveryStats({ startDate, endDate } = {}) {
             return {
                 monthly: {
                     period: startDate ? "Selected Period" : "Current Month",
+                    startDate: p_start,
+                    endDate: p_end,
                     total: monthlyTotal,
                     late: monthlyLate,
-                    on_time: monthlyOnTime,
                     score: `${monthlyScore}%`
                 },
                 daily: {
-                    period: startDate ? "Selected Date (End)" : "Current Date",
+                    period: dailyDate !== "No Data" ? `Latest Active (${dailyDate})` : "Current Date",
+                    date: dailyDate,
                     total: dailyTotal,
                     late: dailyLate,
-                    on_time: dailyOnTime,
                     score: `${dailyScore}%`
                 }
             };
