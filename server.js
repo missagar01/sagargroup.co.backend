@@ -1,7 +1,17 @@
 const path = require("path");
 const dotenv = require("dotenv");
 
-const { initPool, closePool } = require("./src/o2d/config/db.js");
+// Safely try to load Oracle config
+let initPool, closePool;
+try {
+  ({ initPool, closePool } = require("./src/o2d/config/db.js"));
+} catch (err) {
+  console.warn("⚠️ Could not load O2D configuration (db.js):", err.message);
+  console.warn("⚠️ O2D Oracle functionality will be disabled.");
+  // Mock functions to prevent crashes
+  initPool = async () => { throw new Error("Oracle module not loaded (file missing or dependency error)"); };
+  closePool = async () => { };
+}
 const { getPgPool, closePgPool, resetPool } = require("./config/pg.js");
 const { connectDatabase, connectAuthDatabase } = require("./config/database.js");
 const { initSSHTunnel, closeSSHTunnel } = require("./config/sshTunnel.js");

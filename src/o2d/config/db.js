@@ -96,6 +96,15 @@ async function initPool() {
   } catch (err) {
     poolInitializing = false;
     poolInitError = err;
+
+    // specific advice for NJS-138
+    if (err.message && err.message.includes("NJS-138")) {
+      console.error("\n❌ CRITICAL ORACLE ERROR: NJS-138");
+      console.error("👉 The target Oracle Database is too old to be supported by node-oracledb in Thin mode.");
+      console.error("👉 You MUST use 'Thick mode' by installing Oracle Instant Client libraries.");
+      console.error("👉 Please run the provided script on your server: sudo ./install-oracle-client.sh\n");
+    }
+
     await cleanup();
     throw err;
   }

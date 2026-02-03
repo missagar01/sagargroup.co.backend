@@ -239,6 +239,7 @@ async function getFollowupStats(startDate, endDate) {
                 dateFilter = `date_of_calling::date BETWEEN ${start} AND ${end}`;
             }
 
+
             const query = `
                 SELECT
                     COUNT(*)::int AS "totalFollowUps",
