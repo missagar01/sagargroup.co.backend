@@ -19,8 +19,7 @@ async function getAllFollowups() {
                     date_of_calling, 
                     next_calling_date 
                 FROM client_followups 
-                ORDER BY date_of_calling ASC 
-                LIMIT 500
+                ORDER BY date_of_calling DESC, followup_id DESC
             `;
             const result = await pgQuery(query);
             return result.rows;
@@ -163,19 +162,12 @@ async function getSalesPerformanceReport(startDate, endDate) {
     const cacheKey = generateCacheKey(`followups_performance_${startDate || 'default'}_${endDate || 'default'}`);
     return withCache(cacheKey, DEFAULT_TTL.TIMELINE, async () => {
         try {
-            // Default to current month if no dates provided (standard behavior)
-            const start = startDate || "date_trunc('month', current_date)::date";
-            const end = endDate || "current_date";
-
             const values = [];
-            let dateFilter = "";
+            let dateFilter = "1=1";
 
             if (startDate && endDate) {
                 dateFilter = `date_of_calling::date BETWEEN $1 AND $2`;
                 values.push(startDate, endDate);
-            } else {
-                // If using default strings, inject them directly
-                dateFilter = `date_of_calling::date BETWEEN ${start} AND ${end}`;
             }
 
             const query = `
@@ -225,18 +217,12 @@ async function getFollowupStats(startDate, endDate) {
     const cacheKey = generateCacheKey(`followups_stats_${startDate || 'default'}_${endDate || 'default'}`);
     return withCache(cacheKey, DEFAULT_TTL.TIMELINE, async () => {
         try {
-            // Default to current month if no dates provided
-            const start = startDate || "date_trunc('month', current_date)::date";
-            const end = endDate || "current_date";
-
             const values = [];
-            let dateFilter = "";
+            let dateFilter = "1=1";
 
             if (startDate && endDate) {
                 dateFilter = `date_of_calling::date BETWEEN $1 AND $2`;
                 values.push(startDate, endDate);
-            } else {
-                dateFilter = `date_of_calling::date BETWEEN ${start} AND ${end}`;
             }
 
 

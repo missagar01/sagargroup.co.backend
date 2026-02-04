@@ -12,3 +12,5 @@ router.put("/:id", followupController.updateFollowup);
 router.delete("/:id", followupController.deleteFollowup);
 
 module.exports = router;
+
+
