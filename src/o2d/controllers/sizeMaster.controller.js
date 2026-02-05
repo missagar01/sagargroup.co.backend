@@ -149,9 +149,42 @@ const getCurrentMonthEnquiryReport = async (req, res) => {
     }
 };
 
+/**
+ * Controller to get all enquiries
+ * Admin sees all, regular users only see their own
+ */
+const getAllEnquiries = async (req, res) => {
+    try {
+        // Get user from request (populated by auth middleware)
+        const user = req.user;
+
+        let salesExecutiveFilter = null;
+
+        // If user is not admin, filter by their username
+        if (user && user.role !== 'admin') {
+            salesExecutiveFilter = user.username || user.user_name;
+        }
+
+        const data = await sizeMasterService.getAllEnquiries(salesExecutiveFilter);
+
+        res.json({
+            success: true,
+            data: data,
+            count: data.length
+        });
+    } catch (error) {
+        console.error("Controller Error:", error);
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
 module.exports = {
     getSizeMasterData,
     getSizeMasterById,
     createEnquiry,
-    getCurrentMonthEnquiryReport
+    getCurrentMonthEnquiryReport,
+    getAllEnquiries
 };

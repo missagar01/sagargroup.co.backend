@@ -14,4 +14,7 @@ router.get('/:id', sizeMasterController.getSizeMasterById);
 // Get current month enquiry report
 router.get('/report/current-month', sizeMasterController.getCurrentMonthEnquiryReport);
 
+// Get all enquiries (protected route with role-based filtering)
+router.get('/enquiries/all', sizeMasterController.getAllEnquiries);
+
 module.exports = router;

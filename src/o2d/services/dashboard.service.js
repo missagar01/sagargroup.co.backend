@@ -109,33 +109,70 @@ group by t.div_code
 `;
 
 const ALL_SAUDA_AVERAGE_QUERY = `
-select case when t.div_code = 'PM' then 'PIPE'
-       when t.div_code = 'RP' then 'STRIPS'
-       when t.div_code = 'SM' then 'BILLET'
-       end as item,
-       round((sum((t.rate*((t.qtyorder - nvl(t.SALE_INVOICE_QTY,0)) + nvl(t.SRET_QTY,0))))/sum(((t.qtyorder - nvl(t.SALE_INVOICE_QTY,0)) + nvl(t.SRET_QTY,0)))),0) as average
-from view_order_engine t
-where t.entity_code='SR'
-      and t.tcode='E'
-      and t.approveddate is not null
-      and t.closeddate is null
-      and ((t.qtyorder - nvl(t.SALE_INVOICE_QTY,0)) + nvl(t.SRET_QTY,0)) > 0
-      and t.vrdate >= DATE '2025-04-01'
-group by t.div_code
+SELECT
+  CASE
+    WHEN sales_person IN ('DIRECT', 'DC GOUTAM', 'P.S GEDAM')
+      THEN 'ANIL MISHRA'
+    ELSE sales_person
+  END AS sales_person,
+  CASE 
+    WHEN div_code = 'PM' THEN 'PIPE'
+    WHEN div_code = 'RP' THEN 'STRIPS'
+    WHEN div_code = 'SM' THEN 'BILLET'
+    ELSE 'OTHER'
+  END AS item,
+  ROUND(
+    SUM(rate * qty_balance) /
+    NULLIF(SUM(qty_balance), 0),
+  0) AS average
+FROM (
+  SELECT
+    lhs_utility.get_name('emp_code', t.emp_code) AS sales_person,
+    t.div_code,
+    t.rate,
+    ((t.qtyorder - NVL(t.sale_invoice_qty,0)) + NVL(t.sret_qty,0)) AS qty_balance
+  FROM view_order_engine t
+  WHERE t.entity_code = 'SR'
+    AND t.tcode = 'E'
+    AND t.approveddate IS NOT NULL
+    AND t.closeddate IS NULL
+    AND ((t.qtyorder - NVL(t.sale_invoice_qty,0)) + NVL(t.sret_qty,0)) > 0
+    AND t.vrdate >= DATE '2025-04-01'
+)
+GROUP BY
+  CASE
+    WHEN sales_person IN ('DIRECT', 'DC GOUTAM', 'P.S GEDAM')
+      THEN 'ANIL MISHRA'
+    ELSE sales_person
+  END,
+  div_code
 `;
 
 const SALES_AVG_QUERY = `
-select case when t.div_code = 'PM' then 'PIPE'
-       when t.div_code = 'RP' then 'STRIPS'
-       when t.div_code = 'SM' then 'BILLET'
-       end as item,
-       round((sum(t.tax_onamount)/sum(t.qtyissued)),0) as average
-from view_itemtran_engine t
-where t.entity_code='SR'
-      and t.series='SA'
-      and t.vrdate >= TO_DATE(:p_from_date, 'YYYY-MM-DD')
-      and t.vrdate <  TO_DATE(:p_to_date,   'YYYY-MM-DD') + 1
-group by t.div_code
+SELECT
+  CASE
+    WHEN lhs_utility.get_name('emp_code', t.emp_code)
+         IN ('DIRECT', 'DC GOUTAM', 'P.S GEDAM')
+      THEN 'ANIL MISHRA'
+    ELSE lhs_utility.get_name('emp_code', t.emp_code)
+  END AS sales_person,
+  CASE
+    WHEN t.div_code = 'PM' THEN 'PIPE'
+    WHEN t.div_code = 'RP' THEN 'STRIPS'
+    WHEN t.div_code = 'SM' THEN 'BILLET'
+  END AS item,
+  ROUND(
+    SUM(t.tax_onamount) /
+    NULLIF(SUM(t.qtyissued), 0),
+  0) AS average
+FROM view_itemtran_engine t
+WHERE t.entity_code = 'SR'
+  AND t.series = 'SA'
+  AND t.vrdate >= TO_DATE(:p_from_date, 'YYYY-MM-DD')
+  AND t.vrdate <  TO_DATE(:p_to_date,   'YYYY-MM-DD') + 1
+GROUP BY
+  lhs_utility.get_name('emp_code', t.emp_code),
+  t.div_code
 `;
 
 const SAUDA_RATE_TREND_QUERY = `
@@ -199,16 +236,42 @@ FROM dual
 `;
 
 const MONTHLY_STATS_QUERY = `
-select count(acc_code) as monthly_working_party, round((count(acc_code)/900)*100,0) || '%' as monthly_party_average from
-(select distinct t.acc_code
-from view_itemtran_engine t
-where t.entity_code='SR'
-      and t.series='SA'
-      and t.div_code='PM'
-      and t.acc_vrno<>'CANCELLED'
-      and t.vrdate >= TO_DATE(:p_from_date, 'YYYY-MM-DD')
-      and t.vrdate < TO_DATE(:p_to_date, 'YYYY-MM-DD') + 1)
+SELECT
+  CASE
+    WHEN sales_person IN ('DIRECT', 'DC GOUTAM', 'P.S GEDAM')
+      THEN 'ANIL MISHRA'
+    ELSE sales_person
+  END AS sales_person,
+
+  COUNT(DISTINCT acc_code) AS monthly_working_party,
+
+  ROUND(
+    (COUNT(DISTINCT acc_code) / 900) * 100,
+  0) || '%' AS monthly_party_average
+
+FROM (
+  SELECT
+    lhs_utility.get_name('emp_code', t.emp_code) AS sales_person,
+    t.acc_code
+  FROM view_itemtran_engine t
+  WHERE t.entity_code = 'SR'
+    AND t.series = 'SA'
+    AND t.div_code = 'PM'
+    AND t.acc_vrno <> 'CANCELLED'
+    AND t.vrdate >= TO_DATE(:p_from_date, 'YYYY-MM-DD')
+    AND t.vrdate <  TO_DATE(:p_to_date, 'YYYY-MM-DD') + 1
+)
+
+GROUP BY
+  CASE
+    WHEN sales_person IN ('DIRECT', 'DC GOUTAM', 'P.S GEDAM')
+      THEN 'ANIL MISHRA'
+    ELSE sales_person
+  END
+
+ORDER BY sales_person
 `;
+
 
 const PENDING_ORDERS_STATS_QUERY = `
 select count(acc_code) as total, round(((count(acc_code)/900)*100),0)|| '%' as conversion_ratio from
@@ -324,13 +387,14 @@ async function getDashboardData({
       const filterRows = filtersRes.rows || [];
 
       // Extract aggregate stats
-      const mRow = (monthlyRes.rows && monthlyRes.rows[0]) ? monthlyRes.rows[0] : {};
+      const monthlyStats = monthlyRes.rows || [];
       const pRow = (pendingRes.rows && pendingRes.rows[0]) ? pendingRes.rows[0] : {};
       const gdRow = (gdRes.rows && gdRes.rows[0]) ? gdRes.rows[0] : {};
       const saudaRateRow = (saudaRateRes.rows && saudaRateRes.rows[0]) ? saudaRateRes.rows[0] : {};
 
-      const monthlyWorkingParty = mRow.MONTHLY_WORKING_PARTY || 0;
-      const monthlyPartyAverage = mRow.MONTHLY_PARTY_AVERAGE || '0%';
+      // Calculate totals for backward compatibility if needed, or just pass the array
+      // const monthlyWorkingParty = mRow.MONTHLY_WORKING_PARTY || 0;
+      // const monthlyPartyAverage = mRow.MONTHLY_PARTY_AVERAGE || '0%';
       const pendingOrdersTotal = pRow.TOTAL || 0;
       const conversionRatio = pRow.CONVERSION_RATIO || '0%';
 
@@ -374,8 +438,7 @@ async function getDashboardData({
 
       return {
         summary: {
-          monthlyWorkingParty,
-          monthlyPartyAverage,
+          monthlyStats,
           pendingOrdersTotal,
           conversionRatio,
           saudaAvg,

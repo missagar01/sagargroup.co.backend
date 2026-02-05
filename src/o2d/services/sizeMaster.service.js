@@ -41,10 +41,10 @@ async function createEnquiry(enquiryData) {
         if (Array.isArray(enquiryData)) {
             const results = [];
             for (const item of enquiryData) {
-                const { item_type, size, thickness, enquiry_date, customer, quantity } = item;
+                const { item_type, size, thickness, enquiry_date, customer, quantity, sales_executive } = item;
                 const query = `
-                    INSERT INTO enq_erp (item_type, size, thickness, enquiry_date, customer, quantity)
-                    VALUES ($1, $2, $3, $4, $5, $6)
+                    INSERT INTO enq_erp (item_type, size, thickness, enquiry_date, customer, quantity, sales_executive)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
                     RETURNING *
                 `;
                 const values = [
@@ -53,17 +53,18 @@ async function createEnquiry(enquiryData) {
                     parseFloat(thickness),
                     enquiry_date,
                     customer,
-                    quantity ? parseFloat(quantity) : null
+                    quantity ? parseFloat(quantity) : null,
+                    sales_executive || null
                 ];
                 const result = await pgQuery(query, values);
                 results.push(result.rows[0]);
             }
             return results;
         } else {
-            const { item_type, size, thickness, enquiry_date, customer, quantity } = enquiryData;
+            const { item_type, size, thickness, enquiry_date, customer, quantity, sales_executive } = enquiryData;
             const query = `
-                INSERT INTO enq_erp (item_type, size, thickness, enquiry_date, customer, quantity)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO enq_erp (item_type, size, thickness, enquiry_date, customer, quantity, sales_executive)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 RETURNING *
             `;
             const values = [
@@ -72,7 +73,8 @@ async function createEnquiry(enquiryData) {
                 parseFloat(thickness),
                 enquiry_date,
                 customer,
-                quantity ? parseFloat(quantity) : null
+                quantity ? parseFloat(quantity) : null,
+                sales_executive || null
             ];
             const result = await pgQuery(query, values);
             return result.rows[0];
@@ -95,26 +97,26 @@ async function getCurrentMonthEnquiryReport(month) {
 
         if (month && month !== "All Months") {
             query = `
-                SELECT item_type, size, thickness, SUM(quantity) as total
+                SELECT item_type, size, thickness, sales_executive, SUM(quantity) as total
                 FROM enq_erp
                 WHERE TO_CHAR(enquiry_date, 'YYYY-MM') = $1
-                GROUP BY item_type, size, thickness
+                GROUP BY item_type, size, thickness, sales_executive
             `;
             values = [month];
         } else if (month === "All Months") {
             // Show overall data if "All Months" is explicitly selected
             query = `
-                SELECT item_type, size, thickness, SUM(quantity) as total
+                SELECT item_type, size, thickness, sales_executive, SUM(quantity) as total
                 FROM enq_erp
-                GROUP BY item_type, size, thickness
+                GROUP BY item_type, size, thickness, sales_executive
             `;
         } else {
             // Default to current month if no specific month is requested
             query = `
-                SELECT item_type, size, thickness, SUM(quantity) as total
+                SELECT item_type, size, thickness, sales_executive, SUM(quantity) as total
                 FROM enq_erp
                 WHERE DATE_TRUNC('month', enquiry_date) = DATE_TRUNC('month', CURRENT_DATE)
-                GROUP BY item_type, size, thickness
+                GROUP BY item_type, size, thickness, sales_executive
             `;
         }
 
@@ -126,9 +128,49 @@ async function getCurrentMonthEnquiryReport(month) {
     }
 }
 
+/**
+ * Get all enquiries from the database
+ * @param {string} [salesExecutive] - Optional sales executive filter for regular users
+ * @returns {Promise<Array>} Array of all enquiry records
+ */
+async function getAllEnquiries(salesExecutive = null) {
+    try {
+        let query = `
+            SELECT 
+                id,
+                item_type,
+                size,
+                thickness,
+                enquiry_date,
+                customer,
+                quantity,
+                sales_executive,
+                created_at
+            FROM enq_erp
+        `;
+
+        const values = [];
+
+        // If salesExecutive is provided, filter by it (for regular users)
+        if (salesExecutive) {
+            query += ` WHERE sales_executive = $1`;
+            values.push(salesExecutive);
+        }
+
+        query += ` ORDER BY enquiry_date DESC, id DESC`;
+
+        const result = await pgQuery(query, values);
+        return result.rows;
+    } catch (err) {
+        console.error("Error fetching all enquiries:", err);
+        throw err;
+    }
+}
+
 module.exports = {
     getSizeMasterData,
     getSizeMasterById,
     createEnquiry,
-    getCurrentMonthEnquiryReport
+    getCurrentMonthEnquiryReport,
+    getAllEnquiries
 };
