@@ -273,10 +273,10 @@ SELECT
   END AS sales_person,
 
   COUNT(DISTINCT acc_code) AS monthly_working_party,
-
-  ROUND(
-    (COUNT(DISTINCT acc_code) / 900) * 100,
-  0) || '%' AS monthly_party_average
+  TO_CHAR(
+    ROUND((COUNT(DISTINCT acc_code) / 900) * 100, 2),
+    'FM990.00'
+  ) || '%' AS monthly_party_average
 
 FROM (
   SELECT
@@ -312,9 +312,10 @@ SELECT
 
   COUNT(DISTINCT acc_code) AS total,
 
-  ROUND(
-    (COUNT(DISTINCT acc_code) / 900) * 100,
-  0) || '%' AS conversion_ratio
+  TO_CHAR(
+    ROUND((COUNT(DISTINCT acc_code) / 900) * 100, 2),
+    'FM990.00'
+  ) || '%' AS conversion_ratio
 
 FROM (
   SELECT

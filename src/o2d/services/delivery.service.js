@@ -168,7 +168,7 @@ async function getDeliveryStats({ startDate, endDate, salesPerson } = {}) {
             let monthlyScore = 0;
             if (monthlyTotal > 0) {
                 // Formula: (Late / Total) * 100
-                monthlyScore = Math.round((monthlyLate / monthlyTotal) * 100);
+                monthlyScore = ((monthlyLate / monthlyTotal) * 100).toFixed(2);
             }
 
             // Extract Daily Stats (Latest Active Date)
@@ -179,7 +179,7 @@ async function getDeliveryStats({ startDate, endDate, salesPerson } = {}) {
             let dailyScore = 0;
             if (dailyTotal > 0) {
                 // Formula: (Late / Total) * 100
-                dailyScore = Math.round((dailyLate / dailyTotal) * 100);
+                dailyScore = ((dailyLate / dailyTotal) * 100).toFixed(2);
             }
 
             return {
@@ -364,8 +364,8 @@ async function getSalespersonDeliveryStats({ startDate, endDate } = {}) {
                 const dailyLate = row.DAILY_LATE || 0;
                 const dailyDate = row.DAILY_DATE || "No Data";
 
-                const monthlyScore = monthlyTotal > 0 ? Math.round((monthlyLate / monthlyTotal) * 100) : 0;
-                const dailyScore = dailyTotal > 0 ? Math.round((dailyLate / dailyTotal) * 100) : 0;
+                const monthlyScore = monthlyTotal > 0 ? ((monthlyLate / monthlyTotal) * 100).toFixed(2) : "0.00";
+                const dailyScore = dailyTotal > 0 ? ((dailyLate / dailyTotal) * 100).toFixed(2) : "0.00";
 
                 salesPersonStats[salesPerson] = {
                     monthly: {

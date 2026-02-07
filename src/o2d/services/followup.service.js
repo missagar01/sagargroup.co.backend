@@ -208,7 +208,7 @@ async function getSalesPerformanceReport(startDate, endDate) {
                       COUNT(*) FILTER (WHERE actual_order IS NOT NULL AND actual_order > 0)::numeric
                       / NULLIF(COUNT(*)::numeric, 0)
                     ) * 100
-                  , 1) AS "conversionRatio",
+                  , 2) AS "conversionRatio",
                   COALESCE(SUM(actual_order) FILTER (WHERE actual_order IS NOT NULL AND actual_order > 0), 0)::numeric(15,2) AS "totalRsSale",
                   ROUND(
                     COALESCE(AVG(actual_order) FILTER (WHERE actual_order IS NOT NULL AND actual_order > 0), 0)
