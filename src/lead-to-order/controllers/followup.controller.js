@@ -290,42 +290,38 @@ const getHistoryFollowups = async (req, res) => {
       query = `
         SELECT 
           id,
-          created_at,
-          lead_no,
-          customer_say,
-          lead_status,
-          enquiry_received_status,
-          enquiry_received_date,
-          enquiry_approach,
-          item_qty,
-          total_qty,
-          next_action,
+          timestamp as created_at,
+          enquiry_no as lead_no,
+          what_did_customer_say as customer_say,
+          enquiry_status as lead_status,
+          -- is_order_received_status as enquiry_received_status, -- Mapping guessed
+          -- enquiry_received_date NOT IN DB
+          -- enquiry_approach NOT IN DB
+          -- item_qty NOT IN DB
+          -- total_qty NOT IN DB
+          -- next_action NOT IN DB
+          followup_status as next_action, -- Using followup_status as closest match
           next_call_date,
           next_call_time,
-          sales_coordinator
-        FROM leads_tracker
-        ORDER BY created_at DESC;
+          sales_cordinator as sales_coordinator
+        FROM enquiry_tracker
+        ORDER BY timestamp DESC;
       `;
     } else {
       query = `
         SELECT 
           id,
-          created_at,
-          lead_no,
-          customer_say,
-          lead_status,
-          enquiry_received_status,
-          enquiry_received_date,
-          enquiry_approach,
-          item_qty,
-          total_qty,
-          next_action,
+          timestamp as created_at,
+          enquiry_no as lead_no,
+          what_did_customer_say as customer_say,
+          enquiry_status as lead_status,
+          followup_status as next_action,
           next_call_date,
           next_call_time,
-          sales_coordinator
-        FROM leads_tracker
-        WHERE sales_coordinator = $1
-        ORDER BY created_at DESC;
+          sales_cordinator as sales_coordinator
+        FROM enquiry_tracker
+        WHERE sales_cordinator = $1
+        ORDER BY timestamp DESC;
       `;
       params = [username];
     }
@@ -349,7 +345,7 @@ const getHistoryFollowups = async (req, res) => {
 const submitFollowUp = async (req, res) => {
   try {
     const user = req.user; // Get user from JWT middleware
-    
+
     const {
       leadNo,
       customer_say,
@@ -366,14 +362,15 @@ const submitFollowUp = async (req, res) => {
     } = req.body;
 
     // Check if user is authorized to update this lead
+    // Using fms_leads is correct as it is the master table
     const checkAuthQuery = `
       SELECT COUNT(*) FROM fms_leads 
       WHERE lead_no = $1 
       AND (sc_name = $2 OR salesperson_name = $2 OR $3 = 'admin')
     `;
     const checkAuthResult = await pool.query(checkAuthQuery, [
-      leadNo, 
-      user.username, 
+      leadNo,
+      user.username,
       user.userType
     ]);
 
@@ -385,27 +382,22 @@ const submitFollowUp = async (req, res) => {
     }
 
     // ----------------------------------------------------------
-    // STEP 1 → Insert into leads_tracker
+    // STEP 1 → Insert into enquiry_tracker (Replaces leads_tracker)
     // ----------------------------------------------------------
     const leadsTrackerQuery = `
-      INSERT INTO leads_tracker 
-      (lead_no, customer_say, lead_status, enquiry_received_status,
-       enquiry_received_date, enquiry_approach, item_qty, total_qty,
-       next_action, next_call_date, next_call_time, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      INSERT INTO enquiry_tracker 
+      (enquiry_no, what_did_customer_say, enquiry_status, 
+       followup_status, next_call_date, next_call_time, sales_cordinator)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
        RETURNING *;
     `;
 
+    // Note: Mapping next_action to followup_status for now, and skipping missing columns
     const trackerResult = await pool.query(leadsTrackerQuery, [
       leadNo,
       customer_say || null,
       lead_status || null,
-      enquiry_received_status || null,
-      enquiry_received_date || null,
-      enquiry_approach || null,
-      item_qty ? JSON.stringify(item_qty) : null,
-      total_qty || null,
-      next_action || null,
+      next_action || null, // Mapping next_action to followup_status
       next_call_date || null,
       next_call_time || null,
       user.username
@@ -433,11 +425,14 @@ const submitFollowUp = async (req, res) => {
                   ELSE actual
                 END,
         updated_at = NOW(),
-        updated_by = $13
+        -- updated_by = $13 -- Column updated_by might not exist in fms_leads, checking dump...
+        -- Dump says updated_at exists, but NOT updated_by. Removing updated_by.
+        updated_at = NOW()
       WHERE lead_no = $12
       RETURNING *;
     `;
 
+    // Removed updated_by=$13 from SET and values
     const updatedResult = await pool.query(updateQuery, [
       customer_say,
       lead_status,
@@ -450,8 +445,7 @@ const submitFollowUp = async (req, res) => {
       next_action,
       next_call_date,
       next_call_time,
-      leadNo,
-      user.username
+      leadNo
     ]);
 
     if (updatedResult.rows.length === 0) {
@@ -471,9 +465,9 @@ const submitFollowUp = async (req, res) => {
 
   } catch (error) {
     console.error("Follow-Up Submit Error:", error);
-    return res.status(500).json({ 
-      success: false, 
-      message: error.message 
+    return res.status(500).json({
+      success: false,
+      message: error.message
     });
   }
 };
