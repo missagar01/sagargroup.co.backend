@@ -170,16 +170,14 @@ async function deleteClient(clientId) {
  * Get users from MARKETING department
  */
 async function getMarketingUsers() {
-    return withCache(MARKETING_USERS_CACHE_KEY, DEFAULT_TTL.CUSTOMERS, async () => {
-        try {
-            const query = `SELECT id, user_name, department FROM users WHERE department = 'MARKETING'`;
-            const result = await pgQuery(query);
-            return result.rows;
-        } catch (err) {
-            console.error("Error fetching marketing users:", err);
-            throw err;
-        }
-    });
+    try {
+        const query = `SELECT id, user_name, department FROM users WHERE department = 'MARKETING' ORDER BY user_name ASC`;
+        const result = await pgQuery(query);
+        return result.rows;
+    } catch (err) {
+        console.error("Error fetching marketing users:", err);
+        throw err;
+    }
 }
 
 /**
@@ -207,3 +205,4 @@ module.exports = {
     getMarketingUsers,
     getTotalClientsCount
 };
+
