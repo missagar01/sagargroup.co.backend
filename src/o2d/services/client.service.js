@@ -14,19 +14,25 @@ const MARKETING_USERS_CACHE_KEY = generateCacheKey("marketing_users");
 async function getClients() {
     return withCache(CLIENTS_CACHE_KEY, DEFAULT_TTL.CUSTOMERS, async () => {
         try {
-            // Fetch clients and marketing users in parallel for enriching
-            const [clientsRes, usersRes] = await Promise.all([
-                pgQuery(`SELECT client_id, client_name, city, contact_person, contact_details, sales_person_id, client_type, status, created_at FROM clients ORDER BY created_at ASC`),
-                getMarketingUsers() // This will also be cached
-            ]);
+            const query = `
+                SELECT 
+                    t.client_id, 
+                    t.client_name, 
+                    t.city, 
+                    t.contact_person, 
+                    t.contact_details, 
+                    t.sales_person_id, 
+                    t.client_type, 
+                    t.status, 
+                    t.created_at,
+                    t1.user_name as sales_person
+                FROM clients t
+                LEFT JOIN users t1 ON t.sales_person_id = t1.id
+                ORDER BY t.created_at ASC
+            `;
 
-            const clients = clientsRes.rows;
-            const usersMap = new Map(usersRes.map(u => [u.id, u.user_name]));
-
-            return clients.map(c => ({
-                ...c,
-                sales_person: usersMap.get(c.sales_person_id) || null
-            }));
+            const result = await pgQuery(query);
+            return result.rows;
         } catch (err) {
             console.error("Error fetching clients:", err);
             throw err;
