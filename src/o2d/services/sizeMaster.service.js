@@ -15,6 +15,8 @@ async function getSizeMasterData() {
     }
 }
 
+
+
 /**
  * Get size master data by ID
  * @param {number} id - The size master ID
