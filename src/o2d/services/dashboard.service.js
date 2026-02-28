@@ -3,8 +3,6 @@ const oracledb = require("oracledb");
 const { generateCacheKey, withCache, DEFAULT_TTL } = require("../utils/cacheHelper.js");
 
 
-
-
 // Query uses optional filters via bind params (exact match on party/item, date range on indate)
 const BASE_DASHBOARD_QUERY = `
 WITH order_sales AS (
@@ -341,6 +339,20 @@ GROUP BY
 ORDER BY sales_person
 `;
 
+const STATE_DISTRIBUTION_QUERY = `
+select lhs_utility.get_name('state_code', t.state_code) as state_name,
+       sum(t.qtyissued) as total
+from view_itemtran_engine t
+where t.entity_code = 'SR'
+  and t.tcode = 'S'
+  and t.series = 'SA'
+  and t.div_code = 'PM'
+  and t.vrdate >= TRUNC(SYSDATE, 'MM')
+  and t.vrdate <  ADD_MONTHS(TRUNC(SYSDATE, 'MM'), 1)
+group by t.state_code
+order by lhs_utility.get_name('state_code', t.state_code) asc
+`;
+
 function parseDateParam(value) {
   if (!value) return null;
   const d = new Date(value);
@@ -408,7 +420,7 @@ async function getDashboardData({
         throw new Error("Failed to establish Oracle database connection");
       }
 
-      const [result, monthlyRes, pendingRes, saudaAvgRes, salesAvgRes, saudaRateRes, gdRes, filtersRes, allSaudaAvgRes] = await Promise.all([
+      const [result, monthlyRes, pendingRes, saudaAvgRes, salesAvgRes, saudaRateRes, gdRes, filtersRes, allSaudaAvgRes, stateDistributionRes] = await Promise.all([
         connection.execute(BASE_DASHBOARD_QUERY, binds, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         }),
@@ -435,17 +447,20 @@ async function getDashboardData({
         }),
         connection.execute(ALL_SAUDA_AVERAGE_QUERY, {}, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
+        }),
+        connection.execute(STATE_DISTRIBUTION_QUERY, {}, {
+          outFormat: oracledb.OUT_FORMAT_OBJECT,
         })
       ]);
 
       const rows = result.rows || [];
       const filterRows = filtersRes.rows || [];
-
       // Extract aggregate stats
       const monthlyStats = monthlyRes.rows || [];
       const pendingStats = pendingRes.rows || [];
       const gdStats = gdRes.rows || [];
       const saudaRateRow = (saudaRateRes.rows && saudaRateRes.rows[0]) ? saudaRateRes.rows[0] : {};
+      const stateDistribution = stateDistributionRes ? stateDistributionRes.rows || [] : [];
 
       // Calculate totals for backward compatibility if needed, or just pass the array
       // const monthlyWorkingParty = mRow.MONTHLY_WORKING_PARTY || 0;
@@ -500,6 +515,7 @@ async function getDashboardData({
           allSaudaAvg,
           salesAvg,
           saudaRate2026,
+          stateDistribution,
         },
         filters: {
           parties: uniqueParties,
