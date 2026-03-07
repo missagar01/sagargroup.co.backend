@@ -1,0 +1,5 @@
+{
+  "name": "store-module",
+  "private": true,
+  "type": "module"
+}

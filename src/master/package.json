@@ -1,0 +1,5 @@
+{
+  "name": "master-module",
+  "private": true,
+  "type": "module"
+}

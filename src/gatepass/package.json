@@ -1,0 +1,5 @@
+{
+  "name": "gatepass-module",
+  "private": true,
+  "type": "module"
+}

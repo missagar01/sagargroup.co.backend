@@ -4,6 +4,16 @@ const config = require('../../../config/env');
 const ApiError = require('../utils/apiError');
 const tokenBlacklist = require('../utils/tokenBlacklist');
 
+const getJwtSecret = () =>
+  process.env.JWT_SECRET ||
+  process.env.JWT_SCREAT ||
+  process.env.JWT_SECREAT ||
+  process.env.jwt_secret ||
+  process.env.jwt_screat ||
+  process.env.jwt_secreat ||
+  config.jwt.secret ||
+  null;
+
 const extractToken = (req) => {
   const header = req.headers.authorization || req.headers.Authorization;
   if (!header || typeof header !== 'string') {
@@ -23,8 +33,11 @@ const requireAuth = (req, _res, next) => {
   }
 
   try {
-    // Use same JWT_SECRET as shared login
-    const jwtSecret = process.env.JWT_SECRET || config.jwt.secret;
+    const jwtSecret = getJwtSecret();
+    if (!jwtSecret) {
+      return next(new ApiError(StatusCodes.INTERNAL_SERVER_ERROR, 'JWT secret not configured'));
+    }
+
     const decoded = jwt.verify(token, jwtSecret);
     if (tokenBlacklist.isBlacklisted(token)) {
       return next(new ApiError(StatusCodes.UNAUTHORIZED, 'Token has been logged out'));

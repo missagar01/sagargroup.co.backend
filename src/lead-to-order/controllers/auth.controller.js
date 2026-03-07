@@ -2,18 +2,33 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const db = require("../config/db.js");
 
-// Use same JWT_SECRET as shared login
-const JWT_SECRET = process.env.JWT_SECRET || "change-me";
 const JWT_EXPIRES_IN = "24h";
 
+function getJwtSecret() {
+  return (
+    process.env.JWT_SECRET ||
+    process.env.JWT_SCREAT ||
+    process.env.JWT_SECREAT ||
+    process.env.jwt_secret ||
+    process.env.jwt_screat ||
+    process.env.jwt_secreat ||
+    null
+  );
+}
+
 const generateToken = (user) => {
+  const jwtSecret = getJwtSecret();
+  if (!jwtSecret) {
+    throw new Error("JWT secret not configured");
+  }
+
   return jwt.sign(
     {
       id: user.username,
       username: user.username,
       userType: user.usertype,
     },
-    JWT_SECRET,
+    jwtSecret,
     { expiresIn: JWT_EXPIRES_IN }
   );
 };
@@ -41,8 +56,14 @@ const verifyToken = async (req, res, next) => {
       });
     }
 
-    // Use same JWT_SECRET as shared login
-    const jwtSecret = process.env.JWT_SECRET || "change-me";
+    const jwtSecret = getJwtSecret();
+    if (!jwtSecret) {
+      return res.status(500).json({
+        success: false,
+        message: "JWT secret not configured",
+      });
+    }
+
     const decoded = jwt.verify(token, jwtSecret);
 
     // Map token payload from shared login to lead-to-order format

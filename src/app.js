@@ -5,10 +5,14 @@ const compression = require("compression");
 const path = require("path");
 
 const sharedAuthRoutes = require("./auth/routes/login.routes.js");
-const rootRoutes = require("./routes/root.routes.js");
 const batchcodeApp = require("./batchcode/app.cjs");
 const leadToOrderRoutes = require("./lead-to-order/routes/index.js");
 const o2dRoutes = require("./o2d/routes/index.js");
+const hrfmsRoutes = require("./hrfms/routes/index.js");
+const masterRoutes = require("./master/router.cjs");
+const gatepassRoutes = require("./gatepass/router.cjs");
+const storeRoutes = require("./store/router.cjs");
+const documentRoutes = require("./document/router.cjs");
 
 const corsOriginsEnv = process.env.CORS_ORIGINS;
 const corsOrigins = corsOriginsEnv
@@ -59,6 +63,11 @@ const apiRouter = express.Router();
 apiRouter.use("/o2d", o2dRoutes);
 apiRouter.use("/lead-to-order", leadToOrderRoutes);
 apiRouter.use("/batchcode", batchcodeApp);
+apiRouter.use("/hrfms", hrfmsRoutes);
+apiRouter.use("/master", masterRoutes);
+apiRouter.use("/gatepass", gatepassRoutes);
+apiRouter.use("/store", storeRoutes);
+apiRouter.use("/document", documentRoutes);
 apiRouter.use("/auth", sharedAuthRoutes);
 
 const app = express();
@@ -112,9 +121,6 @@ app.use("/uploads", express.static(uploadsPath, {
 }));
 
 app.use("/api", apiRouter);
-
-// Root routes (non-/api routes)
-app.use("/", rootRoutes);
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });

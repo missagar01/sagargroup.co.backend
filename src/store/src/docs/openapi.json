@@ -1,0 +1,20 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Store Backend API",
+    "version": "1.0.0",
+    "description": "Store module API. Authentication is centralized in shared /api/auth/login."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3002",
+      "description": "Local 3002"
+    },
+    {
+      "url": "http://localhost:3004",
+      "description": "Local 3004"
+    }
+  ],
+  "paths": {},
+  "components": {}
+}

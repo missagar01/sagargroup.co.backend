@@ -1,5 +1,17 @@
 const jwt = require("jsonwebtoken");
 
+function getJwtSecret() {
+  return (
+    process.env.JWT_SECRET ||
+    process.env.JWT_SCREAT ||
+    process.env.JWT_SECREAT ||
+    process.env.jwt_secret ||
+    process.env.jwt_screat ||
+    process.env.jwt_secreat ||
+    null
+  );
+}
+
 function getTokenFromHeader(req) {
   const header = req.headers.authorization || req.headers.Authorization;
   if (!header || typeof header !== "string") return null;
@@ -15,15 +27,15 @@ function authenticate(req, res, next) {
   }
 
   try {
-    // Use same JWT_SECRET as shared login
-    const jwtSecret = process.env.JWT_SECRET || "change-me";
-    if (!jwtSecret || jwtSecret === "change-me") {
-      console.warn("⚠️ JWT_SECRET not set or using default value");
+    const jwtSecret = getJwtSecret();
+    if (!jwtSecret) {
+      return res.status(500).json({ success: false, message: "JWT secret not configured" });
     }
+
     const payload = jwt.verify(token, jwtSecret);
     req.user = payload;
     next();
-  } catch (err) {
+  } catch (_err) {
     return res.status(401).json({ success: false, message: "Invalid or expired token" });
   }
 }

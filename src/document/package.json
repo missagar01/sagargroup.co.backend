@@ -1,0 +1,5 @@
+{
+  "name": "document-module",
+  "private": true,
+  "type": "module"
+}

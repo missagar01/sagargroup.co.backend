@@ -1,10 +1,21 @@
 const jwt = require("jsonwebtoken");
 const { loginQuery } = require("../../../config/pg.js");
 
-const JWT_SECRET = process.env.JWT_SECRET || "change-me";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
 
-// Hardcoded query with existing columns only
+function getJwtSecret() {
+  return (
+    process.env.JWT_SECRET ||
+    process.env.JWT_SCREAT ||
+    process.env.JWT_SECREAT ||
+    process.env.jwt_secret ||
+    process.env.jwt_screat ||
+    process.env.jwt_secreat ||
+    null
+  );
+}
+
+// Shared login query (supports username and employee_id)
 async function buildUserSelectQuery() {
   return `
     SELECT 
@@ -22,7 +33,7 @@ async function buildUserSelectQuery() {
       remark,
       employee_id
     FROM users
-    WHERE TRIM(user_name) = $1
+    WHERE TRIM(user_name) = $1 OR TRIM(COALESCE(employee_id, '')) = $1
     LIMIT 1
   `;
 }
@@ -31,6 +42,11 @@ async function buildUserSelectQuery() {
 let cachedUserSelectQuery = null;
 
 function signToken(user) {
+  const jwtSecret = getJwtSecret();
+  if (!jwtSecret) {
+    throw new Error("JWT secret not configured");
+  }
+
   const payload = {
     id: user.id,
     username: user.user_name || user.username,
@@ -45,7 +61,7 @@ function signToken(user) {
     department: user.department || ''
   };
 
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+  return jwt.sign(payload, jwtSecret, { expiresIn: JWT_EXPIRES_IN });
 }
 
 function normalizePermissions(raw = null) {
@@ -61,15 +77,15 @@ function normalizePermissions(raw = null) {
 }
 
 async function login(req, res) {
-  // Support both 'username' and 'user_name' in request body
-  const username = req.body.username || req.body.user_name;
+  // Support username, user_name, or employee_id as login identifier
+  const loginId = req.body.username || req.body.user_name || req.body.employee_id;
   const password = req.body.password;
 
   // Validate input
-  if (!username || !password) {
+  if (!loginId || !password) {
     return res.status(400).json({
       success: false,
-      message: "username and password are required"
+      message: "username/user_name/employee_id and password are required"
     });
   }
 
@@ -81,7 +97,7 @@ async function login(req, res) {
     }
 
     // Query user from login database
-    const result = await loginQuery(cachedUserSelectQuery, [username.trim()]);
+    const result = await loginQuery(cachedUserSelectQuery, [String(loginId).trim()]);
 
     if (!result.rows || result.rows.length === 0) {
       return res.status(401).json({

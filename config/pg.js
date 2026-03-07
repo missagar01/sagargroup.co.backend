@@ -5,25 +5,41 @@ const path = require("path");
 dotenv.config({ path: path.join(__dirname, "../.env") });
 
 let pool;
+function isPoolInvalid(instance) {
+  return !instance || instance._ending || instance._ended;
+}
+
+function parsePort(rawPort) {
+  const matched = String(rawPort || "").match(/\d+/);
+  if (!matched) return 5432;
+  const parsed = Number(matched[0]);
+  return Number.isFinite(parsed) ? parsed : 5432;
+}
 
 /**
  * Singleton pool instance
  */
 function getPgPool() {
-  if (pool) return pool;
+  if (!isPoolInvalid(pool)) return pool;
 
-  const dbHost = process.env.DB_HOST || "";
+  const dbHost = process.env.DB_HOST || process.env.PG_HOST || "";
+  const dbUser = process.env.DB_USER || process.env.PG_USER;
+  const dbPassword = process.env.DB_PASSWORD || process.env.PG_PASSWORD;
+  const dbName = process.env.DB_NAME || process.env.PG_DATABASE || process.env.PG_NAME;
+  const dbPort = process.env.DB_PORT || process.env.PG_PORT;
   const isRDS = dbHost.includes("rds.amazonaws.com");
-  const useSSL = isRDS || String(process.env.DB_SSL || "").toLowerCase() === "true";
+  const useSSL =
+    isRDS ||
+    String(process.env.DB_SSL || process.env.PG_SSL || "").toLowerCase() === "true";
 
   console.log(`📡 Connecting to PostgreSQL: ${dbHost}`);
 
   pool = new Pool({
     host: dbHost,
-    port: Number(process.env.DB_PORT) || 5432,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
+    port: parsePort(dbPort),
+    user: dbUser,
+    password: dbPassword,
+    database: dbName,
     ssl: useSSL ? { rejectUnauthorized: false } : false,
     max: 20, // Increased for better concurrency
     idleTimeoutMillis: 30000,
@@ -61,20 +77,31 @@ async function pgQuery(text, params = []) {
  */
 let loginPool;
 function getLoginPool() {
-  if (loginPool) return loginPool;
+  if (!isPoolInvalid(loginPool)) return loginPool;
 
-  const dbHost = process.env.DB_HOST || "";
+  const dbHost = process.env.DB_HOST || process.env.PG_HOST || "";
+  const dbUser = process.env.DB_USER || process.env.PG_USER;
+  const dbPassword = process.env.DB_PASSWORD || process.env.PG_PASSWORD;
+  const dbName = process.env.DB_NAME || process.env.PG_DATABASE || process.env.PG_NAME;
+  const dbPort = process.env.DB_PORT || process.env.PG_PORT;
   const isRDS = dbHost.includes("rds.amazonaws.com");
-  const useSSL = isRDS || String(process.env.DB_SSL || "").toLowerCase() === "true";
+  const useSSL =
+    isRDS ||
+    String(process.env.DB_SSL || process.env.PG_SSL || "").toLowerCase() === "true";
 
   loginPool = new Pool({
     host: dbHost,
-    port: Number(process.env.DB_PORT) || 5432,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
+    port: parsePort(dbPort),
+    user: dbUser,
+    password: dbPassword,
+    database: dbName,
     ssl: useSSL ? { rejectUnauthorized: false } : false,
     max: 5,
+  });
+
+  loginPool.on("error", (err) => {
+    console.error("❌ Unexpected error on idle login client", err);
+    loginPool = null;
   });
 
   return loginPool;

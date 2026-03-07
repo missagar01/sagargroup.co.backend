@@ -6,6 +6,16 @@ const loginRepository = require('../repositories/login.repository');
 const config = require('../../../config/env');
 const ApiError = require('../utils/apiError');
 
+const getJwtSecret = () =>
+  process.env.JWT_SECRET ||
+  process.env.JWT_SCREAT ||
+  process.env.JWT_SECREAT ||
+  process.env.jwt_secret ||
+  process.env.jwt_screat ||
+  process.env.jwt_secreat ||
+  config.jwt.secret ||
+  null;
+
 const buildToken = (user) => {
   const role = user.role || 'user';
   const payload = {
@@ -16,7 +26,12 @@ const buildToken = (user) => {
     role,
     created_at: user.created_at
   };
-  return jwt.sign(payload, config.jwt.secret, { expiresIn: config.jwt.expiresIn });
+  const jwtSecret = getJwtSecret();
+  if (!jwtSecret) {
+    throw new ApiError(StatusCodes.INTERNAL_SERVER_ERROR, 'JWT secret not configured');
+  }
+
+  return jwt.sign(payload, jwtSecret, { expiresIn: config.jwt.expiresIn });
 };
 
 // login function removed - use /api/auth/login instead

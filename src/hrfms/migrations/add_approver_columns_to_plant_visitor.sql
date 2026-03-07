@@ -1,0 +1,3 @@
+ALTER TABLE IF EXISTS plant_visitor
+ADD COLUMN IF NOT EXISTS approv_employee_code VARCHAR(50) DEFAULT '',
+ADD COLUMN IF NOT EXISTS approve_by_name VARCHAR(150) DEFAULT '';

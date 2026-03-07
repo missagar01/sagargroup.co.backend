@@ -5,6 +5,17 @@ const { z } = require('zod');
 const envPath = path.resolve(process.cwd(), '.env');
 dotenv.config({ path: envPath });
 
+// Support common legacy/typo env keys used in existing deployments.
+if (!process.env.JWT_SECRET) {
+  process.env.JWT_SECRET =
+    process.env.JWT_SCREAT ||
+    process.env.JWT_SECREAT ||
+    process.env.jwt_secret ||
+    process.env.jwt_screat ||
+    process.env.jwt_secreat ||
+    '';
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z
