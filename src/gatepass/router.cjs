@@ -32,14 +32,14 @@ async function buildGatepassRouter() {
     });
   });
 
-  mountedRouter.use("/requests", requestRoutes);
-  mountedRouter.use("/request", requestRoutes);
+  mountedRouter.use("/visits", requestRoutes);
   mountedRouter.use("/persons", personRoutes);
-  mountedRouter.use("/person", personRoutes);
-  mountedRouter.use("/approvals", approveRoutes);
-  mountedRouter.use("/approve", approveRoutes);
-  mountedRouter.use("/close-pass", closePassRoutes);
-  mountedRouter.use("/close", closePassRoutes);
+  mountedRouter.use("/approval", approveRoutes);
+  mountedRouter.use("/gatepass", closePassRoutes);
+  // mountedRouter.use("/requests", requestRoutes);
+  // mountedRouter.use("/person", personRoutes);
+  // mountedRouter.use("/approve", approveRoutes);
+  // mountedRouter.use("/close", closePassRoutes);
 
   return mountedRouter;
 }
