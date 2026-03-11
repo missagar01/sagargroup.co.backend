@@ -16,7 +16,11 @@ const LOCAL_ORACLE_PORT = parseInt(process.env.LOCAL_ORACLE_PORT || '1521', 10);
 const LOCAL_POSTGRES_PORT = parseInt(process.env.LOCAL_POSTGRES_PORT || '5433', 10); // Local port for PostgreSQL tunnel
 const REMOTE_ORACLE_HOST = process.env.ORACLE_HOST || '127.0.0.1';
 const REMOTE_ORACLE_PORT = parseInt(process.env.ORACLE_PORT || '1521', 10);
-const REMOTE_POSTGRES_HOST = process.env.REMOTE_POSTGRES_HOST || '127.0.0.1';
+const REMOTE_POSTGRES_HOST =
+  process.env.REMOTE_POSTGRES_HOST ||
+  process.env.DB_HOST ||
+  process.env.PG_HOST ||
+  '127.0.0.1';
 const REMOTE_POSTGRES_PORT = parseInt(process.env.REMOTE_POSTGRES_PORT || '5432', 10);
 const MAX_INITIAL_RETRIES = parseInt(process.env.SSH_MAX_INITIAL_RETRIES || '3', 10);
 const MAX_BACKOFF_MS = 30000;
@@ -29,12 +33,18 @@ function resetBackoff() {
   reconnectDelayMs = 5000;
 }
 
+function isIgnorableCloseError(err) {
+  return err && err.code === 'ERR_SERVER_NOT_RUNNING';
+}
+
 function cleanupTunnelServers() {
   if (oracleTunnelServer) {
     try {
       oracleTunnelServer.close();
     } catch (err) {
-      console.error('❌ Error closing Oracle tunnel server:', err);
+      if (!isIgnorableCloseError(err)) {
+        console.error('❌ Error closing Oracle tunnel server:', err);
+      }
     }
     oracleTunnelServer = null;
   }
@@ -42,7 +52,9 @@ function cleanupTunnelServers() {
     try {
       postgresTunnelServer.close();
     } catch (err) {
-      console.error('❌ Error closing PostgreSQL tunnel server:', err);
+      if (!isIgnorableCloseError(err)) {
+        console.error('❌ Error closing PostgreSQL tunnel server:', err);
+      }
     }
     postgresTunnelServer = null;
   }
@@ -373,7 +385,7 @@ async function closeSSHTunnel() {
 
     if (oracleTunnelServer) {
       oracleTunnelServer.close((err) => {
-        if (err) console.error('Error closing Oracle tunnel server:', err);
+        if (err && !isIgnorableCloseError(err)) console.error('Error closing Oracle tunnel server:', err);
         oracleTunnelServer = null;
         checkComplete();
       });
@@ -383,7 +395,7 @@ async function closeSSHTunnel() {
 
     if (postgresTunnelServer) {
       postgresTunnelServer.close((err) => {
-        if (err) console.error('Error closing PostgreSQL tunnel server:', err);
+        if (err && !isIgnorableCloseError(err)) console.error('Error closing PostgreSQL tunnel server:', err);
         postgresTunnelServer = null;
         checkComplete();
       });

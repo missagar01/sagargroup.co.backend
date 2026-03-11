@@ -3,6 +3,48 @@ const { loginQuery } = require("../../../config/pg.js");
 
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
 
+const FAST_USER_SELECT_QUERY = `
+  SELECT
+    id,
+    user_name,
+    password,
+    email_id,
+    department,
+    given_by,
+    role,
+    COALESCE(status, 'active') AS status,
+    user_access,
+    page_access,
+    system_access,
+    store_access,
+    remark,
+    employee_id
+  FROM users
+  WHERE user_name = $1 OR employee_id = $1
+  LIMIT 1
+`;
+
+const FALLBACK_USER_SELECT_QUERY = `
+  SELECT
+    id,
+    user_name,
+    password,
+    email_id,
+    department,
+    given_by,
+    role,
+    COALESCE(status, 'active') AS status,
+    user_access,
+    page_access,
+    system_access,
+    store_access,
+    remark,
+    employee_id
+  FROM users
+  WHERE TRIM(user_name) = $1 OR TRIM(COALESCE(employee_id, '')) = $1
+  LIMIT 1
+`;
+
 function getJwtSecret() {
   return (
     process.env.JWT_SECRET ||
@@ -15,42 +57,11 @@ function getJwtSecret() {
   );
 }
 
-// ── Ensure session_token column exists (run once on first login) ──────────────
-let sessionColumnEnsured = false;
-async function ensureSessionTokenColumn() {
-  if (sessionColumnEnsured) return;
-  try {
-    await loginQuery(
-      `ALTER TABLE users ADD COLUMN IF NOT EXISTS session_token TEXT DEFAULT NULL`,
-      []
-    );
-    sessionColumnEnsured = true;
-    console.log("✅ users.session_token column ensured");
-  } catch (err) {
-    console.warn("⚠️  Could not ensure session_token column:", err.message);
-  }
-}
-
-// ── User select query ─────────────────────────────────────────────────────────
-let cachedUserSelectQuery = null;
-async function getUserSelectQuery() {
-  if (cachedUserSelectQuery) return cachedUserSelectQuery;
-  cachedUserSelectQuery = `
-    SELECT
-      id, user_name, password, email_id, department, given_by, role,
-      COALESCE(status, 'active') as status,
-      user_access, page_access, system_access, remark, employee_id
-    FROM users
-    WHERE TRIM(user_name) = $1 OR TRIM(COALESCE(employee_id, '')) = $1
-    LIMIT 1
-  `;
-  return cachedUserSelectQuery;
-}
-
-// ── Sign JWT ──────────────────────────────────────────────────────────────────
 function signToken(user) {
   const jwtSecret = getJwtSecret();
-  if (!jwtSecret) throw new Error("JWT secret not configured");
+  if (!jwtSecret) {
+    throw new Error("JWT secret not configured");
+  }
 
   return jwt.sign(
     {
@@ -61,6 +72,7 @@ function signToken(user) {
       user_access: user.user_access || "",
       page_access: user.page_access || "",
       system_access: user.system_access || "",
+      store_access: user.store_access || "",
       employee_id: user.employee_id || "",
       email_id: user.email_id || "",
       department: user.department || "",
@@ -70,17 +82,15 @@ function signToken(user) {
   );
 }
 
-// ── Normalize DB value ────────────────────────────────────────────────────────
 function normalizeValue(value) {
   if (value === null || value === undefined) return null;
-  if (typeof value === "string" && (value.toUpperCase() === "NULL" || value.trim() === "")) return null;
+  if (typeof value === "string" && (value.toUpperCase() === "NULL" || value.trim() === "")) {
+    return null;
+  }
   return value;
 }
 
-// ── POST /api/auth/login ──────────────────────────────────────────────────────
 async function login(req, res) {
-  await ensureSessionTokenColumn();
-
   const loginId = req.body.username || req.body.user_name || req.body.employee_id;
   const password = req.body.password;
 
@@ -92,8 +102,13 @@ async function login(req, res) {
   }
 
   try {
-    const query = await getUserSelectQuery();
-    const result = await loginQuery(query, [String(loginId).trim()]);
+    const normalizedLoginId = String(loginId).trim();
+    let result = await loginQuery(FAST_USER_SELECT_QUERY, [normalizedLoginId]);
+
+    // Preserve compatibility with legacy rows that may contain stray spaces.
+    if (!result.rows || result.rows.length === 0) {
+      result = await loginQuery(FALLBACK_USER_SELECT_QUERY, [normalizedLoginId]);
+    }
 
     if (!result.rows || result.rows.length === 0) {
       return res.status(401).json({ success: false, message: "Invalid credentials" });
@@ -117,27 +132,22 @@ async function login(req, res) {
       user_access: normalizeValue(user.user_access),
       page_access: normalizeValue(user.page_access),
       system_access: normalizeValue(user.system_access),
+      store_access: normalizeValue(user.store_access),
       employee_id: normalizeValue(user.employee_id),
       email_id: normalizeValue(user.email_id),
       department: normalizeValue(user.department),
       status: user.status || "active",
     };
 
-    // Generate token (30 days)
     const token = signToken(normalizedUser);
 
-    // ── Single-session: store new token in DB, revoking any previous session ──
     try {
-      await loginQuery(
-        `UPDATE users SET session_token = $1 WHERE id = $2`,
-        [token, user.id]
-      );
+      await loginQuery(`UPDATE users SET session_token = $1 WHERE id = $2`, [token, user.id]);
     } catch (err) {
-      console.warn("⚠️  Could not store session_token:", err.message);
-      // Non-fatal — login continues
+      console.warn("Could not store session_token:", err.message);
     }
 
-    console.log("✅ Login:", normalizedUser.user_name);
+    console.log("Login:", normalizedUser.user_name);
 
     return res.status(200).json({
       success: true,
@@ -147,6 +157,7 @@ async function login(req, res) {
         user_access: normalizedUser.user_access,
         page_access: normalizedUser.page_access,
         system_access: normalizedUser.system_access,
+        store_access: normalizedUser.store_access,
         role: normalizedUser.role,
       },
     });
@@ -160,21 +171,18 @@ async function login(req, res) {
   }
 }
 
-// ── POST /api/auth/logout ─────────────────────────────────────────────────────
 async function logout(req, res) {
   const userId = req.user?.id;
   if (userId) {
     try {
       await loginQuery(`UPDATE users SET session_token = NULL WHERE id = $1`, [userId]);
     } catch (err) {
-      console.warn("⚠️  Could not clear session_token on logout:", err.message);
+      console.warn("Could not clear session_token on logout:", err.message);
     }
   }
   return res.status(200).json({ success: true, message: "Logged out successfully" });
 }
 
-// ── GET /api/auth/verify-session ─────────────────────────────────────────────
-// Frontend calls this periodically to detect if session was revoked by another login
 async function verifySession(req, res) {
   const authHeader = req.headers.authorization || "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
@@ -196,21 +204,19 @@ async function verifySession(req, res) {
   }
 
   try {
-    const result = await loginQuery(
-      `SELECT session_token FROM users WHERE id = $1 LIMIT 1`,
-      [decoded.id]
-    );
+    const result = await loginQuery(`SELECT session_token FROM users WHERE id = $1 LIMIT 1`, [
+      decoded.id,
+    ]);
     const row = result.rows?.[0];
     if (!row || row.session_token !== token) {
       return res.status(401).json({
         success: false,
-        message: "Session invalidated — another login detected",
+        message: "Session invalidated - another login detected",
         code: "SESSION_REVOKED",
       });
     }
   } catch (err) {
-    console.warn("⚠️  Could not verify session_token:", err.message);
-    // Fail open — don't lock users out if DB check fails
+    console.warn("Could not verify session_token:", err.message);
   }
 
   return res.status(200).json({ success: true, message: "Session active" });

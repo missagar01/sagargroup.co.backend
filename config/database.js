@@ -18,6 +18,28 @@ const resetMainPool = () => {
   }
 };
 
+const shouldUsePostgresTunnel = ({ host, isRDS }) => {
+  if (!process.env.SSH_HOST || !isTunnelActive()) {
+    return false;
+  }
+
+  const tunnelPreference = String(
+    process.env.PG_USE_SSH_TUNNEL ||
+    process.env.DB_USE_SSH_TUNNEL ||
+    ""
+  ).toLowerCase();
+
+  if (["true", "1", "yes"].includes(tunnelPreference)) {
+    return true;
+  }
+
+  if (["false", "0", "no"].includes(tunnelPreference)) {
+    return false;
+  }
+
+  return Boolean(host) && !isRDS;
+};
+
 
 const buildConnectionOptions = (databaseConfig) => {
   if (config.databaseUrl && databaseConfig === config.postgres) {
@@ -36,9 +58,9 @@ const buildConnectionOptions = (databaseConfig) => {
   const isRDS = host.includes("rds.amazonaws.com");
   const useSSL = isRDS || ssl;
 
-  // Check if we should use SSH tunnel (if SSH_HOST is set and tunnel is actually active)
-  // For AWS RDS, don't use SSH tunnel - connect directly
-  const useTunnel = process.env.SSH_HOST && isTunnelActive() && !isRDS;
+  // Optionally force the shared SSH tunnel even for RDS, which is useful on local
+  // environments where direct 5432 access is blocked but the bastion host can reach it.
+  const useTunnel = shouldUsePostgresTunnel({ host, isRDS });
   const finalHost = useTunnel ? '127.0.0.1' : host;
   const finalPort = useTunnel ? getLocalPostgresPort() : port;
 
@@ -497,6 +519,8 @@ const ensureAuthUsersTable = async () => {
       user_access TEXT,
       page_access TEXT,
       system_access TEXT,
+      store_access TEXT,
+      session_token TEXT,
       remark TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
@@ -665,6 +689,8 @@ const ensureAuthUsersTable = async () => {
     { name: 'user_access', type: 'TEXT', hasDefault: false },
     { name: 'page_access', type: 'TEXT', hasDefault: false },
     { name: 'system_access', type: 'TEXT', hasDefault: false },
+    { name: 'store_access', type: 'TEXT', hasDefault: false },
+    { name: 'session_token', type: 'TEXT', hasDefault: false },
     { name: 'remark', type: 'TEXT', hasDefault: false },
     { name: 'created_at', type: 'TIMESTAMPTZ', hasDefault: true, defaultValue: 'NOW()' },
   ];

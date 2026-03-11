@@ -52,6 +52,18 @@ async function loadStoreDbModule() {
   return storeDbModulePromise;
 }
 
+let storePostgresSchemaModulePromise = null;
+async function loadStorePostgresSchemaModule() {
+  if (!storePostgresSchemaModulePromise) {
+    storePostgresSchemaModulePromise = import("./src/store/src/config/postgresSchema.js").catch((error) => {
+      storePostgresSchemaModulePromise = null;
+      throw error;
+    });
+  }
+
+  return storePostgresSchemaModulePromise;
+}
+
 async function ensurePostgresConnection() {
   const maxRetries = 3;
   let lastError;
@@ -276,6 +288,13 @@ const server = app.listen(port, async () => {
       await connectAuthDatabase();
     } catch (authErr) {
       console.warn("⚠️ Auth database connection failed, continuing without it:", authErr.message);
+    }
+
+    try {
+      const { initStorePostgresSchema } = await loadStorePostgresSchemaModule();
+      await initStorePostgresSchema();
+    } catch (storePgErr) {
+      console.warn("âš ï¸ Store PostgreSQL schema initialization failed:", storePgErr.message);
     }
 
     if (process.env.REDIS_URL) {
