@@ -40,6 +40,18 @@ async function loadChecklistSyncModules() {
   return checklistSyncModulesPromise;
 }
 
+let storeDbModulePromise = null;
+async function loadStoreDbModule() {
+  if (!storeDbModulePromise) {
+    storeDbModulePromise = import("./src/store/src/config/db.js").catch((error) => {
+      storeDbModulePromise = null;
+      throw error;
+    });
+  }
+
+  return storeDbModulePromise;
+}
+
 async function ensurePostgresConnection() {
   const maxRetries = 3;
   let lastError;
@@ -75,8 +87,15 @@ async function ensurePostgresConnection() {
 
 async function closeDatabases() {
   try {
+    const closeStorePoolPromise = loadStoreDbModule()
+      .then((module) => (typeof module.closePool === "function" ? module.closePool() : undefined))
+      .catch((error) => {
+        console.warn("Store Oracle shutdown skipped:", error.message);
+      });
+
     await Promise.all([
       closePool(),
+      closeStorePoolPromise,
       closePgPool(),
       closeSSHTunnel(),
       redisClient.quit()
@@ -201,13 +220,31 @@ const server = app.listen(port, async () => {
     // Initialize Oracle first (make it optional - don't fail server startup)
     console.log("📡 Initializing Oracle database connection...");
     try {
-      await initPool();
-      console.log("✅ Oracle database connection established");
+      const o2dPool = await initPool();
+      if (o2dPool) {
+        console.log("✅ Oracle database connection established");
+      } else {
+        console.warn("⚠️ Oracle database initialization was skipped; O2D endpoints will stay unavailable");
+      }
     } catch (oracleErr) {
       console.error("❌ Oracle connection failed, continuing without it:", oracleErr.message);
       console.error("⚠️ O2D module endpoints will not work without Oracle connection");
       console.error("⚠️ Check your .env file - ensure ORACLE_USER, ORACLE_PASSWORD, and ORACLE_CONNECTION_STRING are set correctly");
       // Don't exit - let the server start, Oracle will fail gracefully when routes are accessed
+    }
+
+    console.log("📡 Initializing Store Oracle database connection...");
+    try {
+      const { initPool: initStorePool } = await loadStoreDbModule();
+      const storePool = await initStorePool();
+      if (storePool) {
+        console.log("✅ Store Oracle database connection established");
+      } else {
+        console.warn("⚠️ Store Oracle initialization was skipped; store Oracle endpoints will stay unavailable");
+      }
+    } catch (storeOracleErr) {
+      console.error("❌ Store Oracle connection failed, continuing without it:", storeOracleErr.message);
+      console.error("⚠️ Store Oracle-backed endpoints will not work without database connection");
     }
 
     // Additional delay to ensure tunnel is fully ready for PostgreSQL connections

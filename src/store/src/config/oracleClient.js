@@ -1,56 +1,55 @@
-// Oracle client configuration
 import oracledb from "oracledb";
-import os from "os";
+import { createRequire } from "module";
 
-try {
-  oracledb.outFormat = oracledb.OUT_FORMAT_OBJECT;
-  oracledb.fetchArraySize = 1000;
-  oracledb.prefetchRows = 1000;
-  console.log("⚙️ Oracle global config applied (OUT_FORMAT_OBJECT, fetchArraySize=1000, prefetchRows=1000)");
-} catch (e) {
-  console.warn("⚠️ Failed to set global Oracle config:", e.message);
+const require = createRequire(import.meta.url);
+const {
+  initOracleClient: initSharedOracleClient,
+  isOracleEnabled,
+} = require("../../../../config/oracleClient.js");
+
+let globalConfigApplied = false;
+
+function getPositiveInteger(value, fallbackValue) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackValue;
 }
 
-/**
- * Oracle Client Initializer (Thick mode)
- */
-export function initOracleClient() {
+function applyGlobalOracleConfig() {
+  if (globalConfigApplied) {
+    return;
+  }
+
+  globalConfigApplied = true;
+
   try {
-    const isWindows = os.platform() === "win32";
+    oracledb.outFormat = oracledb.OUT_FORMAT_OBJECT;
+    oracledb.fetchArraySize = getPositiveInteger(
+      process.env.STORE_ORACLE_FETCH_ARRAY_SIZE || process.env.ORACLE_FETCH_ARRAY_SIZE,
+      1000
+    );
+    oracledb.prefetchRows = getPositiveInteger(
+      process.env.STORE_ORACLE_PREFETCH_ROWS || process.env.ORACLE_PREFETCH_ROWS,
+      1000
+    );
 
-    const winLibDir =
-      process.env.ORACLE_WIN_CLIENT_LIB_DIR || "C:\\oracle\\instantclient_23_9";
-    const linuxLibDir =
-      process.env.ORACLE_LINUX_CLIENT_LIB_DIR || "/home/ubuntu/oracle_client/instantclient_23_26";
-
-    if (isWindows) {
-      oracledb.initOracleClient({ libDir: winLibDir });
-      console.log(`🪟 Oracle client initialized (Thick mode on Windows, libDir = ${winLibDir})`);
-    } else {
-      oracledb.initOracleClient({ libDir: linuxLibDir });
-      console.log(`🐧 Oracle client initialized (Thick mode on Linux, libDir = ${linuxLibDir})`);
-    }
-  } catch (err) {
-    if (err.message && err.message.includes("DPI-1047")) {
-      console.error("❌ Oracle client init failed (DPI-1047: libDir path ya library missing hai):", err.message);
-    } else if (err.message && err.message.includes("ORA-")) {
-      console.error("❌ Oracle client init failed (Oracle error):", err.message);
-    } else {
-      console.error("❌ Failed to initialize Oracle client:", err);
-    }
-    process.exit(1);
+    console.log(
+      `Store Oracle global config applied (OUT_FORMAT_OBJECT, fetchArraySize=${oracledb.fetchArraySize}, prefetchRows=${oracledb.prefetchRows})`
+    );
+  } catch (error) {
+    console.warn("Failed to apply Store Oracle global config:", error.message);
   }
 }
 
+applyGlobalOracleConfig();
+
+export function initOracleClient() {
+  applyGlobalOracleConfig();
+  initSharedOracleClient();
+  return isOracleEnabled();
+}
+
+export function isStoreOracleEnabled() {
+  return isOracleEnabled();
+}
+
 export default oracledb;
-
-
-
-
-
-
-
-
-
-
-
