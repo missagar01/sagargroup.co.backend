@@ -422,8 +422,8 @@ class DashboardService {
           l => l && normalizeEmployeeCode(l.EmployeeCode) === targetEmployeeCode
         );
 
-        const approvedLeaves = leaveRes.rows.filter(l => 
-          (l.request_status || '').toLowerCase() === 'approved' || 
+        const approvedLeaves = leaveRes.rows.filter(l =>
+          (l.request_status || '').toLowerCase() === 'approved' ||
           (l.approved_by_status || '').toLowerCase() === 'approved'
         );
 
@@ -497,8 +497,8 @@ class DashboardService {
           l => l && normalizeEmployeeCode(l.EmployeeCode) === targetEmployeeCode
         );
 
-        const approvedLeaves = lRes.rows.filter(l => 
-          (l.request_status || '').toLowerCase() === 'approved' || 
+        const approvedLeaves = lRes.rows.filter(l =>
+          (l.request_status || '').toLowerCase() === 'approved' ||
           (l.approved_by_status || '').toLowerCase() === 'approved'
         );
 
@@ -516,14 +516,14 @@ class DashboardService {
 
           if (isLeave) {
             if (dt <= now) {
-               attMap[ds] = 'L';
-               onLeave++; // Only count towards summary if it has passed
+              attMap[ds] = 'L';
+              onLeave++; // Only count towards summary if it has passed
             } else {
-               attMap[ds] = 'AL';
+              attMap[ds] = 'AL';
             }
           } else if (dt <= now) {
-             const has = empLogs.some(l => normalizeLogDate(l.LogDate) === ds);
-             if (has) { p++; attMap[ds] = 'P'; } else { a++; attMap[ds] = 'A'; }
+            const has = empLogs.some(l => normalizeLogDate(l.LogDate) === ds);
+            if (has) { p++; attMap[ds] = 'P'; } else { a++; attMap[ds] = 'A'; }
           }
         }
 
