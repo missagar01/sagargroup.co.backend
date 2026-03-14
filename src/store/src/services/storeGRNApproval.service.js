@@ -1,4 +1,9 @@
 import pool from "../config/postgres.js";
+import { getOrSetCache, deleteCache, cacheKeys, DEFAULT_TTL } from "./redisCache.js";
+
+async function invalidateStoreGrnApprovalCache() {
+  await deleteCache(cacheKeys.storeGrnApprovalAll());
+}
 
 /* =========================
    HELPER: ORACLE DATE PARSE
@@ -47,6 +52,7 @@ export async function createSendedBill(data) {
   ];
 
   const { rows } = await pool.query(query, values);
+  await invalidateStoreGrnApprovalCache();
   return rows[0];
 }
 
@@ -55,23 +61,29 @@ export async function createSendedBill(data) {
    GET ALL STORE GRN
 ========================= */
 export async function getAllStoreGRN() {
-  const query = `
-    SELECT
-      planned_date,
-      grn_no,
-      grn_date,
-      party_name,
-      party_bill_no,
-      sended_bill,
-      approved_by_admin,
-      approved_by_gm,
-      close_bill
-    FROM store_grn
-    ORDER BY planned_date DESC NULLS LAST;
-  `;
+  return getOrSetCache(
+    cacheKeys.storeGrnApprovalAll(),
+    async () => {
+      const query = `
+        SELECT
+          planned_date,
+          grn_no,
+          grn_date,
+          party_name,
+          party_bill_no,
+          sended_bill,
+          approved_by_admin,
+          approved_by_gm,
+          close_bill
+        FROM store_grn
+        ORDER BY planned_date DESC NULLS LAST;
+      `;
 
-  const { rows } = await pool.query(query);
-  return rows;
+      const { rows } = await pool.query(query);
+      return rows;
+    },
+    DEFAULT_TTL.STORE_GRN_APPROVAL
+  );
 }
 
 
@@ -87,6 +99,7 @@ export async function patchApprovedByGM(grnNo) {
   `;
 
   const { rows } = await pool.query(query, [grnNo]);
+  await invalidateStoreGrnApprovalCache();
   return rows[0];
 }
 
@@ -102,5 +115,6 @@ export async function patchCloseBill(grnNo) {
   `;
 
   const { rows } = await pool.query(query, [grnNo]);
+  await invalidateStoreGrnApprovalCache();
   return rows[0];
 }

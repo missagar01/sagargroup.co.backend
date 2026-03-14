@@ -69,6 +69,8 @@ redisClient.on("end", () => {
 let isConnecting = false;
 let connectionPromise = null;
 let connectionAttempted = false;
+let lastConnectionAttemptAt = 0;
+const RECONNECT_THROTTLE_MS = 30000;
 
 async function connectRedis() {
   if (redisClient.isOpen) {
@@ -79,13 +81,18 @@ async function connectRedis() {
     return connectionPromise;
   }
 
-  // Only attempt connection once to avoid spam
-  if (connectionAttempted && !redisClient.isOpen) {
-    return redisClient; // Return client, but it won't work (graceful degradation)
+  const now = Date.now();
+  if (
+    connectionAttempted &&
+    !redisClient.isOpen &&
+    now - lastConnectionAttemptAt < RECONNECT_THROTTLE_MS
+  ) {
+    return redisClient;
   }
 
   isConnecting = true;
   connectionAttempted = true;
+  lastConnectionAttemptAt = now;
   connectionPromise = (async () => {
     try {
       await redisClient.connect();

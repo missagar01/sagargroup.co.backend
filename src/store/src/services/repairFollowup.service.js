@@ -1,6 +1,19 @@
 import { getPgPool } from "../config/postgres.js";
+import { getOrSetCache, deleteCache, cacheKeys, DEFAULT_TTL } from "./redisCache.js";
 
 const pool = getPgPool();
+
+async function invalidateRepairFollowupCaches(id = null) {
+    const deletes = [deleteCache(cacheKeys.repairFollowups())];
+
+    if (id !== null && id !== undefined) {
+        deletes.push(deleteCache(cacheKeys.repairFollowupById(id)));
+    } else {
+        deletes.push(deleteCache("store:repairfollowup:id:*"));
+    }
+
+    await Promise.all(deletes);
+}
 
 function differenceInDays(actual, planned) {
     const actualDate = new Date(actual);
@@ -79,22 +92,35 @@ export async function createRepairFollowup(data) {
     ];
 
     const { rows } = await pool.query(query, values);
+    await invalidateRepairFollowupCaches(rows[0]?.id ?? null);
     return rows[0];
 }
 
 export async function getAllRepairFollowups() {
-    const { rows } = await pool.query(
-        `SELECT * FROM repair_followup ORDER BY created_at DESC`
+    return getOrSetCache(
+        cacheKeys.repairFollowups(),
+        async () => {
+            const { rows } = await pool.query(
+                `SELECT * FROM repair_followup ORDER BY created_at DESC`
+            );
+            return rows;
+        },
+        DEFAULT_TTL.REPAIR_FOLLOWUP
     );
-    return rows;
 }
 
 export async function getRepairFollowupById(id) {
-    const { rows } = await pool.query(
-        `SELECT * FROM repair_followup WHERE id = $1`,
-        [id]
+    return getOrSetCache(
+        cacheKeys.repairFollowupById(id),
+        async () => {
+            const { rows } = await pool.query(
+                `SELECT * FROM repair_followup WHERE id = $1`,
+                [id]
+            );
+            return rows[0] || null;
+        },
+        DEFAULT_TTL.REPAIR_FOLLOWUP
     );
-    return rows[0];
 }
 
 export async function updateRepairFollowup(id, data) {
@@ -158,11 +184,13 @@ export async function updateRepairFollowup(id, data) {
     ];
 
     const { rows } = await pool.query(query, values);
+    await invalidateRepairFollowupCaches(id);
     return rows[0];
 }
 
 export async function deleteRepairFollowup(id) {
     await pool.query(`DELETE FROM repair_followup WHERE id = $1`, [id]);
+    await invalidateRepairFollowupCaches(id);
     return true;
 }
 
@@ -187,6 +215,7 @@ export async function updateStage2ById(id, data) {
             id,
         ]);
 
+        await invalidateRepairFollowupCaches(id);
         return rows[0];
     }
 
@@ -229,6 +258,7 @@ export async function updateStage2ById(id, data) {
     ];
 
     const { rows } = await pool.query(query, values);
+    await invalidateRepairFollowupCaches(id);
     return rows[0];
 }
 

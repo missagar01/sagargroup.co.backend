@@ -1,41 +1,104 @@
-// src/services/redisCache.js
-// Production-ready Redis caching utility for Oracle queries
 import redisClient, { connectRedis } from "../config/redisClient.js";
 
-// Default TTL values (in seconds)
 const DEFAULT_TTL = {
-  STOCK: 300, // 5 minutes
-  PO: 180, // 3 minutes
-  INDENT: 180, // 3 minutes
-  DASHBOARD: 120, // 2 minutes
-  GATE_PASS: 180, // 3 minutes
-  UOM: 3600, // 1 hour (rarely changes)
-  AUTH: 300, // 5 minutes (user data cache)
-  COST_LOCATION: 1800, // 30 minutes (cost locations don't change often)
-  STORE_ISSUE: 300, // 5 minutes
+  STOCK: 300,
+  PO: 180,
+  INDENT: 180,
+  DASHBOARD: 120,
+  GATE_PASS: 180,
+  UOM: 300,
+  AUTH: 300,
+  COST_LOCATION: 300,
+  STORE_ISSUE: 180,
+  ITEMS: 300,
+  RETURNABLE: 180,
+  REPAIR_FOLLOWUP: 120,
+  STORE_GRN: 180,
+  STORE_GRN_APPROVAL: 120,
+  DEPARTMENTS: 300,
+  SETTINGS: 180,
 };
 
-/**
- * Ensure Redis is connected before operations
- */
+const memoryCache = new Map();
+const inFlightFetches = new Map();
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function createPatternMatcher(pattern) {
+  return new RegExp(`^${escapeRegex(pattern).replace(/\\\*/g, ".*")}$`);
+}
+
+function getMemoryEntry(key) {
+  const entry = memoryCache.get(key);
+  if (!entry) {
+    return null;
+  }
+
+  if (entry.expiresAt && entry.expiresAt <= Date.now()) {
+    memoryCache.delete(key);
+    return null;
+  }
+
+  return entry.data;
+}
+
+function setMemoryEntry(key, data, ttlSeconds = null) {
+  memoryCache.set(key, {
+    data,
+    expiresAt: ttlSeconds ? Date.now() + (ttlSeconds * 1000) : null,
+  });
+}
+
+function deleteMemoryEntries(pattern) {
+  if (!pattern.includes("*")) {
+    return memoryCache.delete(pattern) ? 1 : 0;
+  }
+
+  const matcher = createPatternMatcher(pattern);
+  let deleted = 0;
+
+  for (const key of memoryCache.keys()) {
+    if (matcher.test(key)) {
+      memoryCache.delete(key);
+      deleted += 1;
+    }
+  }
+
+  return deleted;
+}
+
+function normalizeKeyPart(value) {
+  if (value === undefined || value === null || value === "") {
+    return "na";
+  }
+
+  return encodeURIComponent(String(value).trim().toLowerCase());
+}
+
+function buildKey(prefix, ...parts) {
+  return ["store", prefix, ...parts.map(normalizeKeyPart)].join(":");
+}
+
 async function ensureConnected() {
   if (!redisClient.isOpen) {
     try {
       await connectRedis();
-    } catch (err) {
-      // Silent - already logged in redisClient
-      // App continues without cache (graceful degradation)
+    } catch {
+      // Graceful degradation: memory cache still works.
     }
   }
+
   return redisClient.isOpen;
 }
 
-/**
- * Get cached data from Redis
- * @param {string} key - Cache key
- * @returns {Promise<any|null>} - Cached data or null if not found/error
- */
 export async function getCache(key) {
+  const memoryValue = getMemoryEntry(key);
+  if (memoryValue !== null) {
+    return memoryValue;
+  }
+
   try {
     if (!(await ensureConnected())) {
       return null;
@@ -49,25 +112,19 @@ export async function getCache(key) {
     return JSON.parse(cached);
   } catch (err) {
     console.warn(`[RedisCache] getCache error for key "${key}":`, err.message);
-    return null; // Graceful degradation - return null on error
+    return null;
   }
 }
 
-/**
- * Set cached data in Redis
- * @param {string} key - Cache key
- * @param {any} data - Data to cache
- * @param {number} ttlSeconds - Time to live in seconds (optional)
- * @returns {Promise<boolean>} - Success status
- */
 export async function setCache(key, data, ttlSeconds = null) {
   try {
+    setMemoryEntry(key, data, ttlSeconds);
+
     if (!(await ensureConnected())) {
-      return false;
+      return true;
     }
 
     const serialized = JSON.stringify(data);
-
     if (ttlSeconds) {
       await redisClient.setEx(key, ttlSeconds, serialized);
     } else {
@@ -77,113 +134,105 @@ export async function setCache(key, data, ttlSeconds = null) {
     return true;
   } catch (err) {
     console.warn(`[RedisCache] setCache error for key "${key}":`, err.message);
-    return false; // Graceful degradation
+    return false;
   }
 }
 
-/**
- * Delete cached data from Redis
- * @param {string} key - Cache key (supports patterns with *)
- * @returns {Promise<number>} - Number of keys deleted
- */
 export async function deleteCache(key) {
+  const memoryDeletes = deleteMemoryEntries(key);
+
   try {
     if (!(await ensureConnected())) {
-      return 0;
+      return memoryDeletes;
     }
 
-    // If key contains wildcard, use SCAN + DEL
     if (key.includes("*")) {
       const keys = [];
-      for await (const key of redisClient.scanIterator({
+      for await (const matchedKey of redisClient.scanIterator({
         MATCH: key,
         COUNT: 100,
       })) {
-        keys.push(key);
+        keys.push(matchedKey);
       }
 
-      if (keys.length > 0) {
-        return await redisClient.del(keys);
+      if (!keys.length) {
+        return memoryDeletes;
       }
-      return 0;
+
+      return memoryDeletes + (await redisClient.del(keys));
     }
 
-    // Single key deletion
-    return await redisClient.del(key);
+    return memoryDeletes + (await redisClient.del(key));
   } catch (err) {
     console.warn(`[RedisCache] deleteCache error for key "${key}":`, err.message);
-    return 0;
+    return memoryDeletes;
   }
 }
 
-/**
- * Get or set cache with automatic fallback to Oracle query
- * @param {string} key - Cache key
- * @param {Function} fetchFn - Function to fetch data from Oracle if cache miss
- * @param {number} ttlSeconds - TTL in seconds
- * @returns {Promise<any>} - Cached or fresh data
- */
 export async function getOrSetCache(key, fetchFn, ttlSeconds = null) {
-  // Try to get from cache first
   const cached = await getCache(key);
   if (cached !== null) {
     return cached;
   }
 
-  // Cache miss - fetch from Oracle
-  const freshData = await fetchFn();
-
-  // Store in cache (non-blocking)
-  if (freshData !== null && freshData !== undefined) {
-    setCache(key, freshData, ttlSeconds).catch((err) => {
-      console.warn(`[RedisCache] Failed to cache key "${key}":`, err.message);
-    });
+  if (inFlightFetches.has(key)) {
+    return inFlightFetches.get(key);
   }
 
-  return freshData;
+  const fetchPromise = (async () => {
+    const freshData = await fetchFn();
+
+    if (freshData !== null && freshData !== undefined) {
+      setCache(key, freshData, ttlSeconds).catch((err) => {
+        console.warn(`[RedisCache] Failed to cache key "${key}":`, err.message);
+      });
+    }
+
+    return freshData;
+  })();
+
+  inFlightFetches.set(key, fetchPromise);
+
+  try {
+    return await fetchPromise;
+  } finally {
+    inFlightFetches.delete(key);
+  }
 }
 
-/**
- * Cache key generators for different services
- */
 export const cacheKeys = {
-  // Stock service
-  stock: (fromDate, toDate) => `stock:${fromDate}|${toDate}`,
-
-  // PO service
-  poPending: () => "po:pending",
-  poHistory: () => "po:history",
-
-  // Store Indent service
-  indentPending: () => "indent:pending",
-  indentHistory: () => "indent:history",
-  indentDashboard: () => "indent:dashboard",
-
-  // Repair Gate Pass service
-  gatePassPending: () => "gatepass:pending",
-  gatePassReceived: () => "gatepass:received",
-  gatePassCounts: () => "gatepass:counts",
-
-  // UOM service
-  uomItems: () => "uom:items",
-
-  // Auth service
-  authUser: (userName, employeeId) => `auth:user:${userName || ''}:${employeeId || ''}`,
-
-  // Cost Location service
-  costLocation: (divCode) => `costlocation:${divCode || 'SM'}`,
-
-  // Store Issue service
-  storeIssue: () => "storeissue:all",
+  stock: (fromDate, toDate) => buildKey("stock", fromDate, toDate),
+  poPending: () => buildKey("po", "pending"),
+  poHistory: () => buildKey("po", "history"),
+  indentPending: () => buildKey("indent", "pending"),
+  indentHistory: () => buildKey("indent", "history"),
+  indentDashboard: () => buildKey("indent", "dashboard"),
+  gatePassPending: () => buildKey("gatepass", "pending"),
+  gatePassReceived: () => buildKey("gatepass", "received"),
+  gatePassCounts: () => buildKey("gatepass", "counts"),
+  uomItems: () => buildKey("uom", "items"),
+  authUser: (userName, employeeId) => buildKey("auth", "user", userName, employeeId),
+  costLocation: (divCode) => buildKey("costlocation", divCode || "all"),
+  storeIssue: () => buildKey("storeissue", "all"),
+  itemsMaster: () => buildKey("items", "master"),
+  itemCategories: () => buildKey("items", "categories"),
+  productsMaster: () => buildKey("products", "master"),
+  vendorsMaster: () => buildKey("vendors", "master"),
+  returnableStats: () => buildKey("returnable", "stats"),
+  returnableDetails: () => buildKey("returnable", "details"),
+  repairFollowups: () => buildKey("repairfollowup", "all"),
+  repairFollowupById: (id) => buildKey("repairfollowup", "id", id),
+  storeGrnPending: () => buildKey("storegrn", "pending"),
+  storeGrnApprovalAll: () => buildKey("storegrnapproval", "all"),
+  departments: () => buildKey("departments", "all"),
+  departmentHod: (department) => buildKey("departments", "hod", department),
+  settingsUsers: () => buildKey("settings", "users"),
+  dashboardRepair: () => buildKey("dashboard", "repair-system"),
 };
 
-/**
- * Invalidate cache patterns
- */
 export async function invalidateCache(pattern) {
-  return await deleteCache(pattern);
+  return deleteCache(pattern);
 }
 
-// Export TTL constants
 export { DEFAULT_TTL };
 

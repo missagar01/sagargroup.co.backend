@@ -8,7 +8,7 @@ import { getOrSetCache, cacheKeys, DEFAULT_TTL } from "./redisCache.js";
  */
 export async function getStoreGRNPending() {
     return await getOrSetCache(
-        cacheKeys.storeGrnPending?.() ?? "store-grn:pending",
+        cacheKeys.storeGrnPending(),
         async () => {
             const conn = await getConnection();
 
@@ -48,6 +48,6 @@ export async function getStoreGRNPending() {
                 await conn.close();
             }
         },
-        DEFAULT_TTL.PO // reuse same TTL bucket (safe & consistent)
+        DEFAULT_TTL.STORE_GRN
     );
 }

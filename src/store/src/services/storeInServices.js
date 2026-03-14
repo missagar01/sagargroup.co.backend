@@ -1,4 +1,5 @@
 import pool from "../config/postgres.js";
+import { invalidateRepairDashboardCache } from "./dashboardServices.js";
 
 export const fetchRepairTasks = async () => {
   const query = `
@@ -117,5 +118,6 @@ export const updateStoreIn = async (taskNo, data) => {
   ];
 
   const { rows } = await pool.query(query, values);
+  await invalidateRepairDashboardCache();
   return rows[0];
 };

@@ -1,4 +1,15 @@
 import { withPgClient } from "../config/postgres.js";
+import { getOrSetCache, deleteCache, cacheKeys, DEFAULT_TTL } from "./redisCache.js";
+
+async function invalidateDepartmentCaches(departmentName = null) {
+  const deletes = [deleteCache(cacheKeys.departments()), deleteCache("store:departments:hod:*")];
+
+  if (departmentName) {
+    deletes.push(deleteCache(cacheKeys.departmentHod(departmentName)));
+  }
+
+  await Promise.all(deletes);
+}
 
 /**
  * Fetches HOD details from 'departments' table by department name.
@@ -6,31 +17,43 @@ import { withPgClient } from "../config/postgres.js";
 export async function getHODByDepartment(departmentName) {
   if (!departmentName) return null;
 
-  return withPgClient(async (client) => {
-    const { rows } = await client.query(
-      `
-      SELECT id, department, hod, mobile_number
-      FROM departments
-      WHERE UPPER(department) = UPPER($1)
-      LIMIT 1
-      `,
-      [departmentName.trim()]
-    );
+  const normalizedDepartment = departmentName.trim();
 
-    return rows[0] || null;
-  });
+  return getOrSetCache(
+    cacheKeys.departmentHod(normalizedDepartment),
+    () =>
+      withPgClient(async (client) => {
+        const { rows } = await client.query(
+          `
+          SELECT id, department, hod, mobile_number
+          FROM departments
+          WHERE UPPER(department) = UPPER($1)
+          LIMIT 1
+          `,
+          [normalizedDepartment]
+        );
+
+        return rows[0] || null;
+      }),
+    DEFAULT_TTL.DEPARTMENTS
+  );
 }
 
 /**
  * Fetches all departments.
  */
 export async function getAllDepartments() {
-  return withPgClient(async (client) => {
-    const { rows } = await client.query(
-      `SELECT * FROM departments ORDER BY department ASC`
-    );
-    return rows;
-  });
+  return getOrSetCache(
+    cacheKeys.departments(),
+    () =>
+      withPgClient(async (client) => {
+        const { rows } = await client.query(
+          `SELECT * FROM departments ORDER BY department ASC`
+        );
+        return rows;
+      }),
+    DEFAULT_TTL.DEPARTMENTS
+  );
 }
 
 /**
@@ -38,7 +61,7 @@ export async function getAllDepartments() {
  */
 export async function createDepartment(data) {
   const { department, hod, mobile_number } = data;
-  return withPgClient(async (client) => {
+  const created = await withPgClient(async (client) => {
     const { rows } = await client.query(
       `
       INSERT INTO departments (department, hod, mobile_number)
@@ -49,6 +72,9 @@ export async function createDepartment(data) {
     );
     return rows[0];
   });
+
+  await invalidateDepartmentCaches(department);
+  return created;
 }
 
 /**
@@ -56,7 +82,7 @@ export async function createDepartment(data) {
  */
 export async function updateDepartment(id, data) {
   const { department, hod, mobile_number } = data;
-  return withPgClient(async (client) => {
+  const updated = await withPgClient(async (client) => {
     const { rows } = await client.query(
       `
       UPDATE departments
@@ -68,6 +94,12 @@ export async function updateDepartment(id, data) {
     );
     return rows[0];
   });
+
+  if (updated) {
+    await invalidateDepartmentCaches(updated.department || department);
+  }
+
+  return updated;
 }
 
 /**
@@ -75,7 +107,12 @@ export async function updateDepartment(id, data) {
  */
 export async function deleteDepartment(id) {
   return withPgClient(async (client) => {
-    await client.query(`DELETE FROM departments WHERE id = $1`, [id]);
+    const { rows } = await client.query(
+      `DELETE FROM departments WHERE id = $1 RETURNING department`,
+      [id]
+    );
+
+    await invalidateDepartmentCaches(rows[0]?.department || null);
     return { success: true };
   });
 }

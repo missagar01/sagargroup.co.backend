@@ -1,120 +1,90 @@
 import pool from "../config/postgres.js";
+import { getOrSetCache, deleteCache, cacheKeys, DEFAULT_TTL } from "./redisCache.js";
 
-// 1️⃣ Fetch all tasks
-export const fetchAllTasks = async () => {
-  try {
-    const query = `
-      SELECT *
-      FROM repair_system
-      ORDER BY id DESC;
-    `;
-    const { rows } = await pool.query(query);
-    return rows;
-  } catch (error) {
-    console.error("Error in fetchAllTasks:", error.message);
-    // Return empty array if table doesn't exist
-    if (error.message.includes('does not exist')) {
-      console.warn("⚠️ repair_system table does not exist, returning empty array");
-      return [];
-    }
-    throw error;
-  }
-};
+function isMissingTableError(error) {
+  return String(error?.message || "").includes("does not exist");
+}
 
-// 2️⃣ Pending → actual_4 IS NULL OR status != 'done'
-export const fetchPendingTasks = async () => {
-  try {
-    const query = `
-      SELECT *
-      FROM repair_system
-      WHERE status IS NULL OR status != 'done';
-    `;
-    const { rows } = await pool.query(query);
-    return rows;
-  } catch (error) {
-    console.error("Error in fetchPendingTasks:", error.message);
-    if (error.message.includes('does not exist')) {
-      return [];
-    }
-    throw error;
-  }
-};
+function buildEmptyDashboardPayload() {
+  return {
+    tasks: [],
+    pendingCount: 0,
+    completedCount: 0,
+    totalRepairCost: 0,
+    departmentStatus: [],
+    paymentTypeDistribution: [],
+    vendorWiseCosts: [],
+  };
+}
 
-// 3️⃣ Completed → status = 'done'
-export const fetchCompletedTasks = async () => {
-  try {
-    const query = `
-      SELECT *
-      FROM repair_system
-      WHERE status = 'done';
-    `;
-    const { rows } = await pool.query(query);
-    return rows;
-  } catch (error) {
-    console.error("Error in fetchCompletedTasks:", error.message);
-    if (error.message.includes('does not exist')) {
-      return [];
-    }
-    throw error;
-  }
-};
+export async function invalidateRepairDashboardCache() {
+  await deleteCache(cacheKeys.dashboardRepair());
+}
 
-// 4️⃣ Department-wise count
-export const fetchDepartmentWiseCount = async () => {
-  try {
-    const query = `
-      SELECT department, COUNT(*) AS count
-      FROM repair_system
-      GROUP BY department
-      ORDER BY department ASC;
-    `;
-    const { rows } = await pool.query(query);
-    return rows;
-  } catch (error) {
-    console.error("Error in fetchDepartmentWiseCount:", error.message);
-    if (error.message.includes('does not exist')) {
-      return [];
-    }
-    throw error;
-  }
-};
+export async function fetchDashboardMetricsSnapshot() {
+  return getOrSetCache(
+    cacheKeys.dashboardRepair(),
+    async () => {
+      try {
+        const [
+          tasksResult,
+          statsResult,
+          deptWiseResult,
+          paymentResult,
+          vendorResult,
+        ] = await Promise.all([
+          pool.query(`
+            SELECT *
+            FROM repair_system
+            ORDER BY id DESC
+          `),
+          pool.query(`
+            SELECT
+              COUNT(*) AS total_count,
+              COUNT(*) FILTER (WHERE status = 'done') AS completed_count,
+              COUNT(*) FILTER (WHERE status IS NULL OR status <> 'done') AS pending_count,
+              COALESCE(SUM(total_bill_amount), 0) AS total_repair_cost
+            FROM repair_system
+          `),
+          pool.query(`
+            SELECT department, COUNT(*) AS count
+            FROM repair_system
+            GROUP BY department
+            ORDER BY department ASC
+          `),
+          pool.query(`
+            SELECT payment_type AS type, SUM(total_bill_amount) AS amount
+            FROM repair_system
+            GROUP BY payment_type
+          `),
+          pool.query(`
+            SELECT vendor_name AS vendor, SUM(total_bill_amount) AS cost
+            FROM repair_system
+            GROUP BY vendor_name
+            ORDER BY cost DESC
+            LIMIT 5
+          `),
+        ]);
 
-// 5️⃣ Payment Type Distribution
-export const fetchPaymentTypeDistribution = async () => {
-  try {
-    const query = `
-      SELECT payment_type AS type, SUM(total_bill_amount) AS amount
-      FROM repair_system
-      GROUP BY payment_type;
-    `;
-    const { rows } = await pool.query(query);
-    return rows;
-  } catch (error) {
-    console.error("Error in fetchPaymentTypeDistribution:", error.message);
-    if (error.message.includes('does not exist')) {
-      return [];
-    }
-    throw error;
-  }
-};
+        const stats = statsResult.rows?.[0] || {};
 
-// 6️⃣ Vendor-wise repair cost
-export const fetchVendorWiseCosts = async () => {
-  try {
-    const query = `
-      SELECT vendor_name AS vendor, SUM(total_bill_amount) AS cost
-      FROM repair_system
-      GROUP BY vendor_name
-      ORDER BY cost DESC
-      LIMIT 5;
-    `;
-    const { rows } = await pool.query(query);
-    return rows;
-  } catch (error) {
-    console.error("Error in fetchVendorWiseCosts:", error.message);
-    if (error.message.includes('does not exist')) {
-      return [];
-    }
-    throw error;
-  }
-};
+        return {
+          tasks: tasksResult.rows || [],
+          pendingCount: Number(stats.pending_count || 0),
+          completedCount: Number(stats.completed_count || 0),
+          totalRepairCost: Number(stats.total_repair_cost || 0),
+          departmentStatus: deptWiseResult.rows || [],
+          paymentTypeDistribution: paymentResult.rows || [],
+          vendorWiseCosts: vendorResult.rows || [],
+        };
+      } catch (error) {
+        console.error("Error in fetchDashboardMetricsSnapshot:", error.message || error);
+        if (isMissingTableError(error)) {
+          return buildEmptyDashboardPayload();
+        }
+        throw error;
+      }
+    },
+    DEFAULT_TTL.DASHBOARD
+  );
+}
