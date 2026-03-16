@@ -527,9 +527,10 @@ const ensureAuthUsersTable = async () => {
   `;
   await authPool.query(ddl);
 
+  /* 
   // Check if id column is BIGINT (not auto-increment) and convert to BIGSERIAL
   try {
-    const colCheck = await authPool.query(`
+    const colCheck = await authPool.query(\`
       SELECT 
         data_type,
         column_default
@@ -537,7 +538,7 @@ const ensureAuthUsersTable = async () => {
       WHERE table_schema = 'public'
         AND table_name = 'users'
         AND column_name = 'id'
-    `);
+    \`);
 
     if (colCheck.rows.length > 0) {
       const colInfo = colCheck.rows[0];
@@ -546,72 +547,75 @@ const ensureAuthUsersTable = async () => {
         console.log('Converting id column from BIGINT to BIGSERIAL (auto-increment)...');
 
         // Create sequence if it doesn't exist
-        await authPool.query(`
+        await authPool.query(\`
           CREATE SEQUENCE IF NOT EXISTS users_id_seq;
-        `);
+        \`);
 
         // Set the sequence to start from max(id) + 1
-        const maxIdResult = await authPool.query(`
+        const maxIdResult = await authPool.query(\`
           SELECT COALESCE(MAX(id), 0) as max_id FROM public.users
-        `);
+        \`);
         const maxId = parseInt(maxIdResult.rows[0].max_id) || 0;
 
-        await authPool.query(`
-          SELECT setval('users_id_seq', ${maxId + 1}, false);
-        `);
+        await authPool.query(\`
+          SELECT setval('users_id_seq', \${maxId + 1}, false);
+        \`);
 
         // Alter the column to use the sequence as default
-        // await authPool.query(`
+        // await authPool.query(\`
         //   ALTER TABLE public.users 
         //   ALTER COLUMN id SET DEFAULT nextval('users_id_seq');
-        // `);
+        // \`);
 
         console.log('✅ Successfully converted id column to auto-increment');
       } else if (colInfo.data_type === 'bigint' && colInfo.column_default) {
         // Already has a default, just ensure sequence is set correctly
-        const maxIdResult = await authPool.query(`
+        const maxIdResult = await authPool.query(\`
           SELECT COALESCE(MAX(id), 0) as max_id FROM public.users
-        `);
+        \`);
         const maxId = parseInt(maxIdResult.rows[0].max_id) || 0;
 
-        await authPool.query(`
+        await authPool.query(\`
           CREATE SEQUENCE IF NOT EXISTS users_id_seq;
-          SELECT setval('users_id_seq', ${maxId + 1}, false);
-        `);
+          SELECT setval('users_id_seq', \${maxId + 1}, false);
+        \`);
       }
     }
   } catch (alterErr) {
     console.warn('Could not alter id column to auto-increment:', alterErr.message);
   }
+  */
 
+  /*
   // Ensure the sequence exists and is properly set up for auto-increment (for new tables)
   try {
-    const seqCheck = await authPool.query(`
+    const seqCheck = await authPool.query(\`
       SELECT EXISTS (
         SELECT 1 FROM pg_class WHERE relname = 'users_id_seq'
       )
-    `);
+    \`);
 
     if (!seqCheck.rows[0].exists) {
       // Create sequence if it doesn't exist
-      await authPool.query(`
+      await authPool.query(\`
         CREATE SEQUENCE IF NOT EXISTS users_id_seq;
         SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM public.users), 1), true);
-      `);
+      \`);
     } else {
       // Ensure the sequence is linked to the column and set to correct value
-      const maxIdResult = await authPool.query(`
+      const maxIdResult = await authPool.query(\`
         SELECT COALESCE(MAX(id), 0) as max_id FROM public.users
-      `);
+      \`);
       const maxId = parseInt(maxIdResult.rows[0].max_id) || 0;
 
-      await authPool.query(`
-        SELECT setval('users_id_seq', ${maxId + 1}, false);
-      `);
+      await authPool.query(\`
+        SELECT setval('users_id_seq', \${maxId + 1}, false);
+      \`);
     }
   } catch (seqErr) {
     console.warn('Could not set up users_id_seq sequence:', seqErr.message);
   }
+  */
 
   await authPool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_user_name ON public.users (user_name)');
 
