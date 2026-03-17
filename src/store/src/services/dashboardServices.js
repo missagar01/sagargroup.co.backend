@@ -31,21 +31,12 @@ export async function fetchDashboardMetricsSnapshot() {
     async () => {
       try {
         const [
-          // Original Repair System queries
+          // Original Repair System queries (PostgreSQL)
           tasksResult,
           statsResult,
           deptWiseResult,
           paymentResult,
           vendorResult,
-          // New Consolidated Data
-          indentSummary,
-          pendingIndents,
-          historyIndents,
-          poPendingData,
-          poHistoryData,
-          repairPending,
-          repairHistory,
-          returnableDetails
         ] = await Promise.all([
           pool.query(`
             SELECT *
@@ -77,17 +68,18 @@ export async function fetchDashboardMetricsSnapshot() {
             GROUP BY vendor_name
             ORDER BY cost DESC
             LIMIT 5
-          `),
-          // Store Data Calls
-          storeIndentService.getDashboardMetrics(),
-          storeIndentService.getPending(),
-          storeIndentService.getHistory(),
-          poService.getPoPending(),
-          poService.getPoHistory(),
-          repairGatePassService.getPendingRepairGatePass(),
-          repairGatePassService.getReceivedRepairGatePass(),
-          returnableService.getReturnableDetails()
+          `)
         ]);
+
+        // Fetch Store Data (Oracle) sequentially to prevent connection rejection / ORA-12541 errors
+        const indentSummary = await storeIndentService.getDashboardMetrics();
+        const pendingIndents = await storeIndentService.getPending();
+        const historyIndents = await storeIndentService.getHistory();
+        const poPendingData = await poService.getPoPending();
+        const poHistoryData = await poService.getPoHistory();
+        const repairPending = await repairGatePassService.getPendingRepairGatePass();
+        const repairHistory = await repairGatePassService.getReceivedRepairGatePass();
+        const returnableDetails = await returnableService.getReturnableDetails();
 
         const stats = statsResult.rows?.[0] || {};
 

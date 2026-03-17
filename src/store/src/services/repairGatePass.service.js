@@ -29,10 +29,11 @@ export async function getPendingRepairGatePass() {
           WHERE t.entity_code = 'SR'
             AND SUBSTR(t.vrno, 1, 2) = 'P3'
             AND t.qty1 is null
-            AND t.vrdate >= TRUNC(SYSDATE, 'MM')
-            AND NOT EXISTS (
-              SELECT 1 FROM view_itemtran_engine r
-              WHERE r.entity_code = 'SR' AND SUBSTR(r.vrno, 1, 2) = 'A3' AND r.ref1_vrno = t.vrno
+            AND t.vrno NOT IN (
+              SELECT t.ref1_vrno
+              FROM view_itemtran_engine t
+              WHERE t.entity_code = 'SR'
+                AND SUBSTR(t.vrno, 1, 2) = 'A3'
             )
           ORDER BY t.vrdate DESC, t.vrno DESC
         `;
@@ -85,7 +86,6 @@ export async function getReceivedRepairGatePass() {
           FROM view_itemtran_engine t
           WHERE t.entity_code = 'SR'
             AND t.series = 'A3'
-            AND t.vrdate >= TRUNC(SYSDATE, 'MM')
           ORDER BY t.vrdate DESC, t.vrno DESC
         `;
 
@@ -127,10 +127,11 @@ export async function getRepairGatePassCounts() {
           WHERE t.entity_code = 'SR'
             AND SUBSTR(t.vrno, 1, 2) = 'P3'
             AND t.qty1 is null
-            AND t.vrdate >= TRUNC(SYSDATE, 'MM')
-            AND NOT EXISTS (
-              SELECT 1 FROM view_itemtran_engine r
-              WHERE r.entity_code = 'SR' AND SUBSTR(r.vrno, 1, 2) = 'A3' AND r.ref1_vrno = t.vrno
+            AND t.vrno NOT IN (
+              SELECT t.ref1_vrno
+              FROM view_itemtran_engine t
+              WHERE t.entity_code = 'SR'
+                AND SUBSTR(t.vrno, 1, 2) = 'A3'
             )
         `;
 
@@ -139,7 +140,6 @@ export async function getRepairGatePassCounts() {
           FROM view_itemtran_engine t
           WHERE t.entity_code = 'SR'
             AND t.series = 'A3'
-            AND t.vrdate >= TRUNC(SYSDATE, 'MM')
         `;
 
         const [pendingResult, historyResult] = await Promise.all([
@@ -171,4 +171,3 @@ export async function getRepairGatePassCounts() {
     DEFAULT_TTL.GATE_PASS
   );
 }
-
