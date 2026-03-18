@@ -30,6 +30,18 @@ export async function fetchDashboardMetricsSnapshot() {
     cacheKeys.dashboardRepair(),
     async () => {
       try {
+        // [OPTIMIZATION] Start Google Fetch IMMEDIATELY in the background
+        // This overlaps the slow Google Apps Script API (~3s) with the slow Oracle sequential queries (~6s)
+        // to prevent Vercel's strict 10.0s Serverless 504 Gateway Timeout.
+        const googleFetchPromise = process.env.GOOGLE_FEEDBACK_STORE
+          ? fetch(process.env.GOOGLE_FEEDBACK_STORE)
+              .then((res) => res.json())
+              .catch((err) => {
+                console.error("Failed to fetch Google Forms feedback:", err.message || err);
+                return null;
+              })
+          : Promise.resolve(null);
+
         const [
           // Original Repair System queries (PostgreSQL)
           tasksResult,
@@ -81,32 +93,28 @@ export async function fetchDashboardMetricsSnapshot() {
         const repairHistory = await repairGatePassService.getReceivedRepairGatePass();
         const returnableDetails = await returnableService.getReturnableDetails();
 
-        // Fetch Google Sheet Feedback Data
+        // Resolve Google Sheet Feedback Data
         let vendorFeedbacks = [];
         try {
-          if (process.env.GOOGLE_FEEDBACK_STORE) {
-            // Using native fetch if available, else require('axios')
-            const res = await fetch(process.env.GOOGLE_FEEDBACK_STORE);
-            const json = await res.json();
-            if (json && json.success && json.data && json.data.length > 1) {
-              const headers = json.data[0];
-              let dataRows = json.data.slice(1).map((row) => {
-                const obj = {};
-                headers.forEach((h, i) => {
-                  obj[h] = row[i];
-                });
-                return obj;
+          const json = await googleFetchPromise;
+          if (json && json.success && json.data && json.data.length > 1) {
+            const headers = json.data[0];
+            let dataRows = json.data.slice(1).map((row) => {
+              const obj = {};
+              headers.forEach((h, i) => {
+                obj[h] = row[i];
               });
+              return obj;
+            });
 
-              // Filter out completely empty rows (checking where Timestamp exists)
-              vendorFeedbacks = dataRows.filter(fb => fb.Timestamp && String(fb.Timestamp).trim() !== "");
+            // Filter out completely empty rows (checking where Timestamp exists)
+            vendorFeedbacks = dataRows.filter((fb) => fb.Timestamp && String(fb.Timestamp).trim() !== "");
 
-              // Sort by Timestamp descending (latest first)
-              vendorFeedbacks.sort((a, b) => new Date(b.Timestamp).getTime() - new Date(a.Timestamp).getTime());
-            }
+            // Sort by Timestamp descending (latest first)
+            vendorFeedbacks.sort((a, b) => new Date(b.Timestamp).getTime() - new Date(a.Timestamp).getTime());
           }
         } catch (err) {
-          console.error("Failed to fetch Google Forms feedback:", err.message || err);
+          console.error("Failed to parse Google Forms feedback:", err.message || err);
         }
 
         const stats = statsResult.rows?.[0] || {};
