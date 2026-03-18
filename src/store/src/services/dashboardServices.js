@@ -81,6 +81,34 @@ export async function fetchDashboardMetricsSnapshot() {
         const repairHistory = await repairGatePassService.getReceivedRepairGatePass();
         const returnableDetails = await returnableService.getReturnableDetails();
 
+        // Fetch Google Sheet Feedback Data
+        let vendorFeedbacks = [];
+        try {
+          if (process.env.GOOGLE_FEEDBACK_STORE) {
+            // Using native fetch if available, else require('axios')
+            const res = await fetch(process.env.GOOGLE_FEEDBACK_STORE);
+            const json = await res.json();
+            if (json && json.success && json.data && json.data.length > 1) {
+              const headers = json.data[0];
+              let dataRows = json.data.slice(1).map((row) => {
+                const obj = {};
+                headers.forEach((h, i) => {
+                  obj[h] = row[i];
+                });
+                return obj;
+              });
+
+              // Filter out completely empty rows (checking where Timestamp exists)
+              vendorFeedbacks = dataRows.filter(fb => fb.Timestamp && String(fb.Timestamp).trim() !== "");
+
+              // Sort by Timestamp descending (latest first)
+              vendorFeedbacks.sort((a, b) => new Date(b.Timestamp).getTime() - new Date(a.Timestamp).getTime());
+            }
+          }
+        } catch (err) {
+          console.error("Failed to fetch Google Forms feedback:", err.message || err);
+        }
+
         const stats = statsResult.rows?.[0] || {};
 
         return {
@@ -101,7 +129,8 @@ export async function fetchDashboardMetricsSnapshot() {
           poHistory: poHistoryData?.rows || [],
           repairPending: repairPending || [],
           repairHistory: repairHistory || [],
-          returnableDetails: returnableDetails || []
+          returnableDetails: returnableDetails || [],
+          feedbacks: vendorFeedbacks,
         };
       } catch (error) {
         console.error("Error in fetchDashboardMetricsSnapshot:", error.message || error);
