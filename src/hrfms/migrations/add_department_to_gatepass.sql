@@ -1,0 +1,2 @@
+ALTER TABLE gatepass
+ADD COLUMN IF NOT EXISTS department VARCHAR(150);

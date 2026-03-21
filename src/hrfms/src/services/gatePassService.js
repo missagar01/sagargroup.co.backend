@@ -2,9 +2,18 @@ const gatePassModel = require('../models/gatePassModel');
 const { getGatePassImageUrl, normalizeGatePassImageUrl } = require('../utils/gatePassUpload');
 
 class GatePassService {
-  async getAllGatePasses() {
+  async getAllGatePasses(options = {}) {
+    const { scope = 'all', user = null } = options;
+
     try {
-      return await gatePassModel.findAll();
+      const gatePasses = await gatePassModel.findAll();
+
+      if (String(scope || '').toLowerCase() !== 'mine') {
+        return gatePasses;
+      }
+
+      const userIdentity = this.getUserIdentity(user);
+      return gatePasses.filter((item) => this.belongsToUser(item, userIdentity));
     } catch (error) {
       throw new Error(`Failed to fetch gate passes: ${error.message}`);
     }
@@ -21,6 +30,9 @@ class GatePassService {
   async createGatePass(data, file, baseUrl) {
     try {
       const normalized = this.prepareNewGatePassData(data, file, baseUrl);
+      if (!normalized.department || typeof normalized.department !== 'string') {
+        throw this.createValidationError('department is required');
+      }
       if (!normalized.employee_photo || typeof normalized.employee_photo !== 'string') {
         throw this.createValidationError('employee_photo is required');
       }
@@ -80,6 +92,7 @@ class GatePassService {
     const fields = [
       'name',
       'mobile_number',
+      'department',
       'employee_photo',
       'employee_address',
       'purpose_of_visit',
@@ -174,6 +187,14 @@ class GatePassService {
       throw this.createValidationError('mobile_number must not exceed 15 characters');
     }
 
+    if (!data.department || typeof data.department !== 'string') {
+      throw this.createValidationError('department is required');
+    }
+
+    if (data.department.length > 150) {
+      throw this.createValidationError('department must not exceed 150 characters');
+    }
+
     if (!data.date_of_leave || !this.isValidDateString(data.date_of_leave)) {
       throw this.createValidationError('date_of_leave must be a valid date in YYYY-MM-DD format');
     }
@@ -197,6 +218,58 @@ class GatePassService {
 
   isValidTimeString(value) {
     return typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(value);
+  }
+
+  getUserIdentity(user) {
+    return {
+      mobile: this.normalizePhone(
+        user?.number ||
+        user?.mobile ||
+        user?.phone ||
+        user?.mobilenumber ||
+        ''
+      ),
+      name: this.normalizeTextKey(
+        user?.user_name ||
+        user?.employee_name ||
+        user?.username ||
+        user?.Name ||
+        ''
+      ),
+      department: this.normalizeTextKey(user?.department || user?.Department || '')
+    };
+  }
+
+  belongsToUser(gatePass, userIdentity) {
+    if (!gatePass || !userIdentity) {
+      return false;
+    }
+
+    const gatePassMobile = this.normalizePhone(gatePass.mobile_number);
+    const gatePassName = this.normalizeTextKey(gatePass.name);
+    const gatePassDepartment = this.normalizeTextKey(gatePass.department);
+
+    if (userIdentity.mobile && gatePassMobile && gatePassMobile === userIdentity.mobile) {
+      return true;
+    }
+
+    return Boolean(
+      userIdentity.name &&
+      userIdentity.department &&
+      gatePassName === userIdentity.name &&
+      gatePassDepartment === userIdentity.department
+    );
+  }
+
+  normalizeTextKey(value) {
+    return String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+  }
+
+  normalizePhone(value) {
+    return String(value || '').replace(/\D+/g, '');
   }
 
   createValidationError(message) {

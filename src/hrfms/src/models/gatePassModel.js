@@ -1,13 +1,33 @@
 const pool = require('../config/db');
 
 class GatePassModel {
-  async findAll() {
-    const query = `
+  async findAll(options = {}) {
+    const { departments = [] } = options;
+    const values = [];
+    let query = `
       SELECT *
       FROM gatepass
-      ORDER BY created_at ASC
     `;
-    const result = await pool.query(query);
+
+    if (Array.isArray(departments) && departments.length > 0) {
+      values.push(
+        departments.map((department) =>
+          String(department || '')
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+        )
+      );
+      query += `
+        WHERE LOWER(TRIM(REGEXP_REPLACE(COALESCE(department, ''), '[[:space:]]+', ' ', 'g'))) = ANY($1)
+      `;
+    }
+
+    query += `
+      ORDER BY created_at DESC
+    `;
+
+    const result = await pool.query(query, values);
     return result.rows;
   }
 
@@ -22,6 +42,7 @@ class GatePassModel {
       INSERT INTO gatepass (
         name,
         mobile_number,
+        department,
         employee_photo,
         employee_address,
         purpose_of_visit,
@@ -34,7 +55,7 @@ class GatePassModel {
         created_at,
         updated_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
       )
       RETURNING *
     `;
@@ -42,6 +63,7 @@ class GatePassModel {
     const values = [
       data.name,
       data.mobile_number,
+      data.department,
       data.employee_photo,
       data.employee_address,
       data.purpose_of_visit,
@@ -63,23 +85,25 @@ class GatePassModel {
       SET
         name = COALESCE($1, name),
         mobile_number = COALESCE($2, mobile_number),
-        employee_photo = COALESCE($3, employee_photo),
-        employee_address = COALESCE($4, employee_address),
-        purpose_of_visit = COALESCE($5, purpose_of_visit),
-        reason = COALESCE($6, reason),
-        date_of_leave = COALESCE($7, date_of_leave),
-        time_of_entry = COALESCE($8, time_of_entry),
-        hod_approval = COALESCE($9, hod_approval),
-        status = COALESCE($10, status),
-        gate_pass_closed = COALESCE($11, gate_pass_closed),
+        department = COALESCE($3, department),
+        employee_photo = COALESCE($4, employee_photo),
+        employee_address = COALESCE($5, employee_address),
+        purpose_of_visit = COALESCE($6, purpose_of_visit),
+        reason = COALESCE($7, reason),
+        date_of_leave = COALESCE($8, date_of_leave),
+        time_of_entry = COALESCE($9, time_of_entry),
+        hod_approval = COALESCE($10, hod_approval),
+        status = COALESCE($11, status),
+        gate_pass_closed = COALESCE($12, gate_pass_closed),
         updated_at = CURRENT_TIMESTAMP
-      WHERE id = $12
+      WHERE id = $13
       RETURNING *
     `;
 
     const values = [
       data.name,
       data.mobile_number,
+      data.department,
       data.employee_photo,
       data.employee_address,
       data.purpose_of_visit,

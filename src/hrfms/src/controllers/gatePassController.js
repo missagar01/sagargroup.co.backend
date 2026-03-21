@@ -24,7 +24,10 @@ class GatePassController {
 
   async getAllGatePasses(req, res, next) {
     try {
-      const gatePasses = await gatePassService.getAllGatePasses();
+      const gatePasses = await gatePassService.getAllGatePasses({
+        scope: req.query?.scope,
+        user: req.user
+      });
       res.status(200).json({
         success: true,
         data: gatePasses,
