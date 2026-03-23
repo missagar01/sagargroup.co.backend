@@ -5,7 +5,7 @@ import { createVisitRequest, getAllVisitsForAdmin, getVisitorByMobile } from "..
 
 const router = express.Router();
 
-router.use(protect);
+// router.use(protect);
 router.post("/", upload.single("photoData"), createVisitRequest);
 router.get("/by-mobile/:mobile", getVisitorByMobile);
 router.get("/admin", getAllVisitsForAdmin);

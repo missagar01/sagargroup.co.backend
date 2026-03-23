@@ -6,6 +6,7 @@ import {
     sendVisitRequestWhatsappToGroup
 } from "../services/requestService.js";
 import { uploadToS3 } from "../middleware/s3Upload.js";
+import { buildFrontendUrl } from "../utils/frontendUrl.js";
 
 export const createVisitRequest = async (req, res, next) => {
     try {
@@ -41,6 +42,7 @@ export const createVisitRequest = async (req, res, next) => {
                 req.body,
                 visitorPhoto
             );
+        const approvalPageUrl = buildFrontendUrl(req, "/gatepass/approvals");
 
         await sendVisitRequestWhatsapp(person, {
             visitorName,
@@ -49,7 +51,7 @@ export const createVisitRequest = async (req, res, next) => {
             purposeOfVisit,
             dateOfVisit,
             timeOfEntry
-        });
+        }, approvalPageUrl);
 
         await sendVisitRequestWhatsappToGroup(person, {
             visitorName,

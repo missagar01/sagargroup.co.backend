@@ -9,7 +9,7 @@ import {
 
 const router = express.Router();
 
-router.use(protect);
+// router.use(protect);
 router.get("/", getAllPersons);
 router.post("/", createPerson);
 router.put("/:id", updatePerson);

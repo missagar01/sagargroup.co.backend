@@ -446,29 +446,18 @@ Note: Same endpoints are also available via `/api/maintenance/...` alias. Token 
 
 | Method | Endpoint |
 |---|---|
-| GET | `/api/gatepass/approvals`|
-| PATCH | `/api/gatepass/approvals/:id`|
-| GET | `/api/gatepass/approve`|
-| PATCH | `/api/gatepass/approve/:id`|
-| GET | `/api/gatepass/close`|
-| GET | `/api/gatepass/close-pass`|
-| PATCH | `/api/gatepass/close-pass/:id`|
-| PATCH | `/api/gatepass/close/:id`|
-| GET | `/api/gatepass/health`|
-| GET | `/api/gatepass/person`|
-| POST | `/api/gatepass/person`|
-| DELETE | `/api/gatepass/person/:id`|
-| PUT | `/api/gatepass/person/:id`|
-| GET | `/api/gatepass/persons`|
-| POST | `/api/gatepass/persons`|
-| DELETE | `/api/gatepass/persons/:id`|
-| PUT | `/api/gatepass/persons/:id`|
-| POST | `/api/gatepass/request`|
-| GET | `/api/gatepass/request/admin`|
-| GET | `/api/gatepass/request/by-mobile/:mobile`|
-| POST | `/api/gatepass/requests`|
-| GET | `/api/gatepass/requests/admin`|
-| GET | `/api/gatepass/requests/by-mobile/:mobile`|
+| GET | /api/gatepass/approval|
+| PATCH | /api/gatepass/approval/:id|
+| GET | /api/gatepass/gatepass|
+| PATCH | /api/gatepass/gatepass/:id|
+| GET | /api/gatepass/persons|
+| POST | /api/gatepass/persons|
+| DELETE | /api/gatepass/persons/:id|
+| PUT | /api/gatepass/persons/:id|
+| POST | /api/gatepass/visits|
+| GET | /api/gatepass/visits|
+| GET | /api/gatepass/visits/admin|
+| GET | /api/gatepass/visits/by-mobile/:mobile|
 
 ## Document APIs (72)
 

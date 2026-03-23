@@ -3,6 +3,7 @@ import {
     updateVisitApprovalService,
     sendApprovalWhatsappMessage
 } from "../services/approveService.js";
+import { buildFrontendUrl } from "../utils/frontendUrl.js";
 
 export const getVisitsForApproval = async (req, res, next) => {
     try {
@@ -40,15 +41,16 @@ export const updateVisitApproval = async (req, res, next) => {
             status,
             approvedBy
         );
+        const closePassUrl = buildFrontendUrl(req, "/gatepass/close-pass");
 
         const message = `
-📢 *Gate Pass:* ${status.toUpperCase()}
-👤 *Visitor Name:* ${visit.visitor_name}
-👥 *Person To Meet:* ${visit.person_to_meet}
-✅ *Status:* ${status.toUpperCase()}
-👮 *Approved By:* ${approvedBy}
-Click for Close Pass:
-🔗 https://gate-pass-srmpl.vercel.app/dashboard/delegation
+*Gate Pass:* ${status.toUpperCase()}
+*Visitor Name:* ${visit.visitor_name}
+*Person To Meet:* ${visit.person_to_meet}
+*Status:* ${status.toUpperCase()}
+*Approved By:* ${approvedBy}
+*Open Close Pass Page:*
+${closePassUrl}
         `;
 
         await sendApprovalWhatsappMessage(message);

@@ -66,7 +66,8 @@ export const createVisitRequestService = async (
 
 export const sendVisitRequestWhatsapp = async (
     person,
-    visitorDetails
+    visitorDetails,
+    approvalPageUrl
 ) => {
     if (!person || !person.phone) {
         console.warn("WhatsApp skipped: person or phone not found");
@@ -90,15 +91,15 @@ export const sendVisitRequestWhatsapp = async (
 
     const message = `
 *Visitor Name:* ${visitorName}
-📱 *Visitor Mobile:* ${mobileNumber}
-🎯 *Purpose:* ${purposeOfVisit || "N/A"}
-📅 *Date of Visit:* ${dateOfVisit}
-⏰ *Time of Entry:* ${timeOfEntry}
-🏠 *Visitor Address:* ${visitorAddress || "N/A"}
-👤 *Meeting With:* ${person.person_to_meet}
+*Visitor Mobile:* ${mobileNumber}
+*Purpose:* ${purposeOfVisit || "N/A"}
+*Date of Visit:* ${dateOfVisit}
+*Time of Entry:* ${timeOfEntry}
+*Visitor Address:* ${visitorAddress || "N/A"}
+*Meeting With:* ${person.person_to_meet}
 
-*Login for Approve:*
-🔗 https://gate-pass-srmpl.vercel.app/dashboard/quick-task
+*Open Approval Page:*
+${approvalPageUrl}
     `;
 
     try {
@@ -119,7 +120,7 @@ export const sendVisitRequestWhatsapp = async (
         );
     } catch (err) {
         console.error(
-            "⚠️ WhatsApp send failed:",
+            "WhatsApp send failed:",
             err.response?.data || err.message
         );
     }
@@ -143,24 +144,23 @@ export const sendVisitRequestWhatsappToGroup = async (
         visitorAddress
     } = visitorDetails;
 
-    // 👉 SAME message, JUST WITHOUT LOGIN LINK
     const message = `
 *New Visitor Request Created*
 
 *Visitor Name:* ${visitorName}
-📱 *Visitor Mobile:* ${mobileNumber}
-🎯 *Purpose:* ${purposeOfVisit || "N/A"}
-📅 *Date of Visit:* ${dateOfVisit}
-⏰ *Time of Entry:* ${timeOfEntry}
-🏠 *Visitor Address:* ${visitorAddress || "N/A"}
-👤 *Meeting With:* ${person?.person_to_meet || "N/A"}
+*Visitor Mobile:* ${mobileNumber}
+*Purpose:* ${purposeOfVisit || "N/A"}
+*Date of Visit:* ${dateOfVisit}
+*Time of Entry:* ${timeOfEntry}
+*Visitor Address:* ${visitorAddress || "N/A"}
+*Meeting With:* ${person?.person_to_meet || "N/A"}
     `;
 
     try {
         await axios.post(
             `${process.env.MAYTAPI_BASE_URL}/${process.env.MAYTAPI_PRODUCT_ID}/${process.env.MAYTAPI_PHONE_ID}/sendMessage`,
             {
-                to_number: process.env.VISITOR_GROUP_ID, // 👈 GROUP ID
+                to_number: process.env.VISITOR_GROUP_ID,
                 message,
                 type: "text"
             },
@@ -174,12 +174,11 @@ export const sendVisitRequestWhatsappToGroup = async (
         );
     } catch (err) {
         console.error(
-            "⚠️ WhatsApp group send failed:",
+            "WhatsApp group send failed:",
             err.response?.data || err.message
         );
     }
 };
-
 
 export const getAllVisitsForAdminService = async () => {
     try {
@@ -212,7 +211,6 @@ export const getAllVisitsForAdminService = async () => {
         throw err;
     }
 };
-
 
 export const getVisitorByMobileService = async (mobileNumber) => {
     try {

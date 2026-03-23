@@ -7,7 +7,7 @@ import {
 
 const router = express.Router();
 
-router.use(protect);
+// router.use(protect);
 router.get("/", getVisitsForApproval);
 router.patch("/:id", updateVisitApproval);
 
