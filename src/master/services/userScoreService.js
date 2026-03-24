@@ -3,73 +3,107 @@ import pool from "../config/db.js";
 /* -------------------- BASE QUERY -------------------- */
 const BASE_QUERY = `
 WITH base_tasks AS (
+    -- 1️⃣ checklist
     SELECT
-        c.name,
-        c.status,
-        c.task_start_date::date AS task_date,
-        c.submission_date::date AS submission_date_only,
-        c.department
+        u.division,
+        u.department,
+        u.user_name AS doer,
+        u.employee_id,
+        c.status
     FROM public.checklist c
-    WHERE c.task_start_date::date > $1
+    JOIN public.users u
+        ON c.name = u.user_name
+    WHERE c.task_start_date::date >= $1
       AND c.task_start_date::date <  $2
-      AND c.name <> 'Sheelesh Marele'
+      /**USER_FILTER**/
+
+    UNION ALL
+
+    -- 2️⃣ maintenance_task_assign
+    SELECT
+        u.division,
+        u.department,
+        u.user_name AS doer,
+        u.employee_id,
+        m.task_status AS status
+    FROM public.maintenance_task_assign m
+    JOIN public.users u
+        ON m.doer_name = u.user_name
+    WHERE m.task_start_date::date >= $1
+      AND m.task_start_date::date <  $2
+      /**USER_FILTER**/
+
+    UNION ALL
+
+    -- 3️⃣ assign_task
+    SELECT
+        u.division,
+        u.department,
+        u.user_name AS doer,
+        u.employee_id,
+        a.status
+    FROM public.assign_task a
+    CROSS JOIN unnest(
+        string_to_array(
+            regexp_replace(a.hod, '\\s*(and|&)\\s*', ',', 'gi'),
+            ','
+        )
+    ) AS hod_name
+    JOIN public.users u
+        ON trim(hod_name) = u.user_name
+    WHERE a.task_start_date::date >= $1
+      AND a.task_start_date::date <  $2
       /**USER_FILTER**/
 ),
 summary AS (
     SELECT
-        department,
-        name AS doer,
-        COUNT(*) AS total_tasks,
-        COUNT(*) FILTER (WHERE lower(status::text) = 'yes') AS total_completed_tasks,
-        COUNT(*) FILTER (
-            WHERE lower(status::text) = 'yes'
-              AND submission_date_only <= task_date
-        ) AS total_done_on_time
-    FROM base_tasks
-    GROUP BY department, name
-),
-scores AS (
-    SELECT
+        division,
         department,
         doer,
-        total_tasks,
-        total_completed_tasks,
-        total_done_on_time,
-        ROUND(
-            COALESCE(
-                (total_completed_tasks::numeric / NULLIF(total_tasks,0)) * 100 - 100,
-                -100
-            ),
-            2
-        ) AS completion_score,
-        ROUND(
-            COALESCE(
-                (total_done_on_time::numeric / NULLIF(total_completed_tasks,0)) * 100 - 100,
-                -100
-            ),
-            2
-        ) AS ontime_score
-    FROM summary
+        employee_id,
+        COUNT(*) AS total_tasks,
+        COUNT(*) FILTER (
+            WHERE lower(status::text) = 'yes'
+        ) AS total_completed_tasks,
+        COUNT(*) FILTER (
+            WHERE lower(status::text) <> 'yes'
+               OR status IS NULL
+        ) AS not_completed_tasks
+    FROM base_tasks
+    GROUP BY division, department, doer, employee_id
 )
 SELECT
+    division,
     department,
     doer,
+    employee_id,
     total_tasks,
     total_completed_tasks,
-    total_done_on_time,
-    completion_score,
-    ontime_score,
+    not_completed_tasks,
     GREATEST(
-        ROUND(completion_score + ontime_score, 2),
+        COALESCE(
+            ROUND((total_completed_tasks::numeric / NULLIF(total_tasks,0)) * 100 - 100, 2),
+            0
+        ),
         -100
-    ) AS total_score
-FROM scores
-ORDER BY department, doer;
+    ) AS completion_score,
+    -- Compatibility aliases for existing frontend
+    GREATEST(
+        COALESCE(
+            ROUND((total_completed_tasks::numeric / NULLIF(total_tasks,0)) * 100 - 100, 2),
+            0
+        ),
+        -100
+    ) AS total_score,
+    0 AS total_done_on_time,
+    0 AS ontime_score
+FROM summary
+ORDER BY division, department, doer;
 `;
 
 /* -------------------- GET ALL USERS -------------------- */
 export const fetchAllUserScoresService = async (startDate, endDate) => {
-    const query = BASE_QUERY.replace("/**USER_FILTER**/", "");
+    const query = BASE_QUERY.replace(/\/\*\*USER_FILTER\*\*\//g, "");
     const { rows } = await pool.query(query, [startDate, endDate]);
     return rows;
 };
@@ -81,8 +115,8 @@ export const fetchUserScoreByIdService = async (
     endDate
 ) => {
     const query = BASE_QUERY.replace(
-        "/**USER_FILTER**/",
-        "AND c.name = $3"
+        /\/\*\*USER_FILTER\*\*\//g,
+        "AND u.user_name = $3"
     );
 
     const { rows } = await pool.query(query, [
@@ -93,3 +127,4 @@ export const fetchUserScoreByIdService = async (
 
     return rows;
 };
+
