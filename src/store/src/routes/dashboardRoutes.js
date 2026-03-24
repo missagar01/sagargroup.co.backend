@@ -9,19 +9,20 @@ import {
   getRepairHistory,
   getReturnableDetails,
 } from "../controllers/dashboardController.js";
+import { authenticate } from "../middlewares/auth.middleware.js";
 
 const router = express.Router();
 
 // GET dashboard summary (Consolidated)
-router.get("/", getDashboardMetrics);
+router.get("/", authenticate, getDashboardMetrics);
 
 // Individual Endpoints for Testing
-router.get("/pending-indents", getPendingIndents);
-router.get("/history-indents", getHistory);
-router.get("/po-pending", getPoPending);
-router.get("/po-history", getPoHistory);
-router.get("/repair-pending", getRepairPending);
-router.get("/repair-history", getRepairHistory);
-router.get("/returnable-details", getReturnableDetails);
+router.get("/pending-indents", authenticate, getPendingIndents);
+router.get("/history-indents", authenticate, getHistory);
+router.get("/po-pending", authenticate, getPoPending);
+router.get("/po-history", authenticate, getPoHistory);
+router.get("/repair-pending", authenticate, getRepairPending);
+router.get("/repair-history", authenticate, getRepairHistory);
+router.get("/returnable-details", authenticate, getReturnableDetails);
 
 export default router;
