@@ -1,6 +1,30 @@
 // controllers/settingController.js
 import { pool } from "../config/db.js";
 
+const normalizeDepartmentAccess = (value, fallbackDepartment = null) => {
+  const source =
+    value !== undefined && value !== null && value !== ""
+      ? value
+      : fallbackDepartment;
+
+  if (source === undefined) {
+    return undefined;
+  }
+
+  if (source === null || source === "") {
+    return null;
+  }
+
+  const items = Array.isArray(source) ? source : String(source).split(",");
+  const normalized = [...new Set(
+    items
+      .map((item) => (typeof item === "string" ? item.trim() : String(item).trim()))
+      .filter(Boolean)
+  )];
+
+  return normalized.length > 0 ? normalized.join(",") : null;
+};
+
 /*******************************
  * 1) GET USERS
  *******************************/
@@ -65,12 +89,18 @@ export const createUser = async (req, res) => {
       role,
       status,
       user_access,
+      departments,
       user_access1,
       system_access,
       page_access,
       division,
       designation
     } = req.body;
+
+    const normalizedDepartmentAccess = normalizeDepartmentAccess(
+      user_access !== undefined ? user_access : departments,
+      department
+    );
 
     // Prepare values array with proper null handling
     const values = [
@@ -82,7 +112,7 @@ export const createUser = async (req, res) => {
       givenBy || null,
       role || 'user',
       status || 'active',
-      user_access || null,
+      normalizedDepartmentAccess ?? null,
       employee_id || null,
       user_access1 || null,
       system_access || null,
@@ -186,6 +216,7 @@ export const updateUser = async (req, res) => {
       role: "role",
       status: "status",
       user_access: "user_access",
+      departments: "user_access",
       user_access1: "user_access1",
       system_access: "system_access",
       page_access: "page_access",
@@ -204,7 +235,7 @@ export const updateUser = async (req, res) => {
       given_by: { maxLength: 500 },
       role: { maxLength: 100 },
       status: { maxLength: 100 },
-      user_access: { maxLength: 500 },
+      user_access: { maxLength: 100000 },
       user_access1: { maxLength: 100000 },
       system_access: { maxLength: 500 },
       page_access: { maxLength: 500 },
@@ -225,6 +256,18 @@ export const updateUser = async (req, res) => {
       const rawValue = normalizedPayload[bodyKey];
       if (columnName === "password") {
         const sanitized = sanitizePassword(rawValue);
+        if (sanitized === undefined) {
+          continue;
+        }
+        updates[columnName] = sanitized;
+        continue;
+      }
+
+      if (columnName === "user_access") {
+        const sanitized = normalizeDepartmentAccess(
+          rawValue,
+          normalizedPayload.department
+        );
         if (sanitized === undefined) {
           continue;
         }
