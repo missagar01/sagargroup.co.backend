@@ -22,6 +22,7 @@ export async function getPoPending() {
             t.vrdate AS VRDATE,
             lhs_utility.get_name('acc_code', t.acc_code) AS VENDOR_NAME,
             t.item_name AS ITEM_NAME,
+            nvl(t.cramt,0) as POAMOUNT,
             t.qtyorder AS QTYORDER,
             t.um AS UM,
             NVL(t.qtyexecute, 0) AS QTYEXECUTE,
