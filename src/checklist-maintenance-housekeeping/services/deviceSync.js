@@ -3,6 +3,13 @@ import { pool, maintenancePool } from "../config/db.js";
 import { pool as housekeepingPool } from "../config/housekeppingdb.js";
 
 const LOG_DEVICE_SYNC = process.env.LOG_DEVICE_SYNC === "true";
+const DEVICE_API_URL = process.env.DEVICE_API_URL;
+const DEVICE_API_KEY = process.env.API_KEY;
+const DEVICE_SERIALS = String(process.env.DEVICE_SERIALS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+
 const logSync = (...args) => {
   if (LOG_DEVICE_SYNC) console.log(...args);
 };
@@ -336,13 +343,27 @@ export const refreshDeviceSync = async (today = formatDateString(new Date()), fo
   inFlight = (async () => {
     try {
       const yesterday = getAdjacentDate(today, -1);
-
-      const IN_API_URL = `http://139.167.179.192:90/api/v2/WebAPI/GetDeviceLogs?APIKey=361011012609&SerialNumber=E03C1CB36042AA02&FromDate=${yesterday}&ToDate=${today}`;
-      const OUT_API_URL = `http://139.167.179.192:90/api/v2/WebAPI/GetDeviceLogs?APIKey=361011012609&SerialNumber=E03C1CB34D83AA02&FromDate=${yesterday}&ToDate=${today}`;
+      const [inSerial, outSerial] = DEVICE_SERIALS;
 
       const [inRes, outRes] = await Promise.all([
-        axios.get(IN_API_URL, { timeout: 3000 }).catch(() => ({ data: [] })),
-        axios.get(OUT_API_URL, { timeout: 3000 }).catch(() => ({ data: [] })),
+        axios.get(DEVICE_API_URL, {
+          timeout: 3000,
+          params: {
+            APIKey: DEVICE_API_KEY,
+            SerialNumber: inSerial,
+            FromDate: yesterday,
+            ToDate: today,
+          },
+        }).catch(() => ({ data: [] })),
+        axios.get(DEVICE_API_URL, {
+          timeout: 3000,
+          params: {
+            APIKey: DEVICE_API_KEY,
+            SerialNumber: outSerial,
+            FromDate: yesterday,
+            ToDate: today,
+          },
+        }).catch(() => ({ data: [] })),
       ]);
 
       const inLogs = Array.isArray(inRes.data) ? inRes.data : [];
