@@ -45,6 +45,8 @@ const asText = (value) => {
   return String(value).trim();
 };
 
+const asKeyPart = (value) => normalizeHeader(asText(value)) || "na";
+
 const buildHeaderIndex = (headers = []) => {
   const indexMap = new Map();
   headers.forEach((header, index) => {
@@ -67,12 +69,20 @@ const getValueByHeaders = (row, headerIndex, aliases = []) => {
 };
 
 const normalizeVendorRow = (row, headerIndex, index) => {
+  const timestamp = asText(getValueByHeaders(row, headerIndex, HEADER_ALIASES.timestamp));
+  const supplierName = asText(
+    getValueByHeaders(row, headerIndex, HEADER_ALIASES.supplierName)
+  );
+  const vendorRegistrationNumber = asText(
+    getValueByHeaders(row, headerIndex, HEADER_ALIASES.vendorRegistrationNumber)
+  );
+
   const normalized = {
-    id:
-      asText(getValueByHeaders(row, headerIndex, HEADER_ALIASES.vendorRegistrationNumber)) ||
-      `${asText(getValueByHeaders(row, headerIndex, HEADER_ALIASES.timestamp)) || "row"}-${index + 1}`,
-    timestamp: asText(getValueByHeaders(row, headerIndex, HEADER_ALIASES.timestamp)),
-    supplierName: asText(getValueByHeaders(row, headerIndex, HEADER_ALIASES.supplierName)),
+    id: `${asKeyPart(vendorRegistrationNumber)}-${asKeyPart(timestamp)}-${asKeyPart(
+      supplierName
+    )}-${index + 1}`,
+    timestamp,
+    supplierName,
     gstNo: asText(getValueByHeaders(row, headerIndex, HEADER_ALIASES.gstNo)),
     correspondenceAddress: asText(
       getValueByHeaders(row, headerIndex, HEADER_ALIASES.correspondenceAddress)
@@ -94,9 +104,7 @@ const normalizeVendorRow = (row, headerIndex, index) => {
       getValueByHeaders(row, headerIndex, HEADER_ALIASES.companyOwnerName)
     ),
     ownerEmail: asText(getValueByHeaders(row, headerIndex, HEADER_ALIASES.ownerEmail)),
-    vendorRegistrationNumber: asText(
-      getValueByHeaders(row, headerIndex, HEADER_ALIASES.vendorRegistrationNumber)
-    ),
+    vendorRegistrationNumber,
     whatsappStatus: asText(
       getValueByHeaders(row, headerIndex, HEADER_ALIASES.whatsappStatus)
     ).toUpperCase(),
