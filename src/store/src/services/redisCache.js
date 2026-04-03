@@ -19,6 +19,7 @@ const DEFAULT_TTL = {
   RETURNABLE: 2,
   REPAIR_FOLLOWUP: 2,
   STORE_GRN: 2,
+  GATE_ENTRY: 2,
   STORE_GRN_APPROVAL: 2,
   DEPARTMENTS: 300,
   SETTINGS: 60,
@@ -279,6 +280,8 @@ export const cacheKeys = {
   repairFollowupById: (id) => buildKey("repairfollowup", "id", id),
   repairFollowupByIdPattern: () => buildPattern("repairfollowup", "id", "*"),
   storeGrnPending: () => buildKey("storegrn", "pending"),
+  pendingGateEntry: (fromDate, toDate) =>
+    buildKey("gateentry", "pending", fromDate, toDate),
   storeGrnApprovalAll: () => buildKey("storegrnapproval", "all"),
   departments: () => buildKey("departments", "all"),
   departmentHod: (department) => buildKey("departments", "hod", department),
