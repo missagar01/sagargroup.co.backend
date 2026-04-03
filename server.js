@@ -1,6 +1,10 @@
 const path = require("path");
 const dotenv = require("dotenv");
 
+dotenv.config({
+  path: path.join(__dirname, ".env"),
+});
+
 // Safely try to load Oracle config
 let initPool, closePool;
 try {
@@ -16,10 +20,6 @@ const { getPgPool, closePgPool, resetPool } = require("./config/pg.js");
 const { connectDatabase, connectAuthDatabase } = require("./config/database.js");
 const { initSSHTunnel, closeSSHTunnel } = require("./config/sshTunnel.js");
 const redisClient = require("./config/redis.js");
-
-dotenv.config({
-  path: path.join(__dirname, ".env"),
-});
 
 const port = Number(process.env.PORT || 3004); // Server Port
 const DEPLOY_MODE = process.env.DEPLOY_MODE === "true";

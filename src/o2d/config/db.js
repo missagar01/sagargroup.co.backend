@@ -8,8 +8,14 @@ let poolInitializing = false;
 let poolInitError = null;
 let sshTunnelActive = false;
 
-const LOCAL_ORACLE_PORT = parseInt(process.env.LOCAL_ORACLE_PORT || "1521", 10);
+function getLocalOraclePort() {
+  return parseInt(process.env.LOCAL_ORACLE_PORT || "1521", 10);
+}
 const ORACLE_SERVICE = process.env.ORACLE_SERVICE_NAME || "ora11g"; // ✅ configurable
+
+function getOracleServiceName() {
+  return process.env.ORACLE_SERVICE_NAME || "ora11g";
+}
 
 function validateEnv() {
   const missing = [];
@@ -70,12 +76,12 @@ async function initPool() {
     if (!isOracleEnabled()) {
       console.warn("⚠️ Oracle is DISABLED or failed to initialize. Skipping pool creation.");
       poolInitializing = false;
-      return;
+      return null;
     }
 
     let connectString;
     if (usingSSHTunnel && sshTunnelActive) {
-      connectString = `127.0.0.1:${LOCAL_ORACLE_PORT}/${ORACLE_SERVICE}`;
+      connectString = `127.0.0.1:${getLocalOraclePort()}/${getOracleServiceName()}`;
       console.log("🔗 Using SSH tunnel:", connectString);
     } else if (usingDirectConnection) {
       connectString = process.env.ORACLE_CONNECTION_STRING;
@@ -104,6 +110,7 @@ async function initPool() {
     console.log("✅ Oracle test query OK");
 
     poolInitializing = false;
+    return pool;
   } catch (err) {
     poolInitializing = false;
     poolInitError = err;
@@ -143,6 +150,11 @@ async function getConnection() {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       if (!pool) await initPool();
+      if (!pool) {
+        throw new Error(
+          "Oracle pool is not initialized. Check Oracle Instant Client, SSH tunnel, and Oracle environment variables on this server."
+        );
+      }
       const connection = await pool.getConnection();
 
       // Test the connection is actually working
