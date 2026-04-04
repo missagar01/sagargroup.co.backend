@@ -1,4 +1,4 @@
-const { pgQuery } = require("../../../config/pg.js");
+const { pgQuery, getPgPool } = require("../../../config/pg.js");
 const { generateCacheKey, withCache, delCached, DEFAULT_TTL } = require("../utils/cacheHelper.js");
 
 // ==========================================
@@ -68,10 +68,40 @@ async function invalidateClientsCache() {
     await delCached(generateCacheKey("clients_count"));
 }
 
+async function resolveNextClientId(dbClient, providedClientId) {
+    const parsedClientId = Number.parseInt(providedClientId, 10);
+    if (Number.isInteger(parsedClientId) && parsedClientId > 0) {
+        return parsedClientId;
+    }
+
+    const sequenceResult = await dbClient.query(
+        `SELECT pg_get_serial_sequence('clients', 'client_id') AS sequence_name`
+    );
+    const sequenceName = sequenceResult.rows[0]?.sequence_name;
+
+    if (sequenceName) {
+        const nextIdResult = await dbClient.query(
+            `SELECT nextval($1::regclass) AS client_id`,
+            [sequenceName]
+        );
+        return nextIdResult.rows[0].client_id;
+    }
+
+    // Legacy databases may not have a sequence/default on clients.client_id.
+    // Lock writes while we derive the next integer to avoid duplicate ids.
+    await dbClient.query(`LOCK TABLE clients IN EXCLUSIVE MODE`);
+
+    const nextIdResult = await dbClient.query(
+        `SELECT COALESCE(MAX(client_id), 0) + 1 AS client_id FROM clients`
+    );
+    return nextIdResult.rows[0].client_id;
+}
+
 /**
  * Create a new client
  */
 async function createClient(clientData) {
+    const dbClient = await getPgPool().connect();
     try {
         const {
             client_id,
@@ -84,35 +114,48 @@ async function createClient(clientData) {
             status
         } = clientData;
 
+        await dbClient.query("BEGIN");
+
+        const nextClientId = await resolveNextClientId(dbClient, client_id);
+
         const query = `
             INSERT INTO clients (
                 client_id, client_name, city, contact_person, 
-                contact_details, sales_person_id, client_type, status
+                contact_details, sales_person_id, client_type, status,
+                created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             RETURNING *
         `;
 
         const values = [
-            client_id || null,
+            nextClientId,
             client_name,
-            city,
-            contact_person,
-            contact_details,
+            city || null,
+            contact_person || null,
+            contact_details || null,
             sales_person_id ? parseInt(sales_person_id) : null,
-            client_type,
+            client_type || null,
             status || 'Active'
         ];
 
-        const result = await pgQuery(query, values);
+        const result = await dbClient.query(query, values);
+        await dbClient.query("COMMIT");
 
         // Invalidate cache
         await invalidateClientsCache();
 
         return result.rows[0];
     } catch (err) {
+        try {
+            await dbClient.query("ROLLBACK");
+        } catch (rollbackErr) {
+            console.error("Error rolling back client creation:", rollbackErr);
+        }
         console.error("Error creating client:", err);
         throw err;
+    } finally {
+        dbClient.release();
     }
 }
 
