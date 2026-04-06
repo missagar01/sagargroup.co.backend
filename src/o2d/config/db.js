@@ -1,16 +1,15 @@
 // src/o2d/config/db.js
 const oracledb = require("oracledb");
 const { initOracleClient } = require("../../../config/oracleClient.js");
-const { initSSHTunnel, closeSSHTunnel } = require("../../../config/sshTunnel.js"); // keep if your sshTunnel.js is here
+const {
+  initSSHTunnel,
+  getLocalOraclePort,
+} = require("../../../config/sshTunnel.js");
 
 let pool;
 let poolInitializing = false;
 let poolInitError = null;
 let sshTunnelActive = false;
-
-function getLocalOraclePort() {
-  return parseInt(process.env.LOCAL_ORACLE_PORT || "1521", 10);
-}
 const ORACLE_SERVICE = process.env.ORACLE_SERVICE_NAME || "ora11g"; // ✅ configurable
 
 function getOracleServiceName() {
@@ -136,9 +135,6 @@ async function cleanup() {
     pool = null;
   }
   if (sshTunnelActive) {
-    try {
-      await closeSSHTunnel();
-    } catch { }
     sshTunnelActive = false;
   }
 }

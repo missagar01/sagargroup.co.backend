@@ -1,14 +1,9 @@
-// src/services/po.service.js
 import { getConnection } from "../config/db.js";
 import oracledb from "oracledb";
 import { getOrSetCache, cacheKeys, DEFAULT_TTL } from "./redisCache.js";
 
-/**
- * 🔹 PENDING PO – full list (no backend pagination)
- * Uses Redis cache for fast retrieval
- */
 export async function getPoPending() {
-  return await getOrSetCache(
+  return getOrSetCache(
     cacheKeys.poPending(),
     async () => {
       const conn = await getConnection();
@@ -22,7 +17,7 @@ export async function getPoPending() {
             t.vrdate AS VRDATE,
             lhs_utility.get_name('acc_code', t.acc_code) AS VENDOR_NAME,
             t.item_name AS ITEM_NAME,
-            nvl(t.cramt,0) as POAMOUNT,
+            NVL(t.cramt, 0) AS POAMOUNT,
             t.qtyorder AS QTYORDER,
             t.um AS UM,
             NVL(t.qtyexecute, 0) AS QTYEXECUTE,
@@ -46,14 +41,6 @@ export async function getPoPending() {
 
         const rows = result.rows || [];
 
-        // Debug logging - check first row
-        if (rows.length > 0) {
-          const firstRow = rows[0];
-          console.log("🔍 PO Pending - First row keys:", Object.keys(firstRow));
-          console.log("🔍 PO Pending - INDENT_NO:", firstRow.INDENT_NO);
-          console.log("🔍 PO Pending - INDENTER:", firstRow.INDENTER);
-        }
-
         return {
           rows,
           total: rows.length,
@@ -66,12 +53,8 @@ export async function getPoPending() {
   );
 }
 
-/**
- * 🔹 HISTORY PO – full list (no backend pagination)
- * Uses Redis cache for fast retrieval
- */
 export async function getPoHistory() {
-  return await getOrSetCache(
+  return getOrSetCache(
     cacheKeys.poHistory(),
     async () => {
       const conn = await getConnection();
@@ -85,7 +68,7 @@ export async function getPoHistory() {
             t.vrdate AS VRDATE,
             lhs_utility.get_name('acc_code', t.acc_code) AS VENDOR_NAME,
             t.item_name AS ITEM_NAME,
-            nvl(t.cramt,0) as POAMOUNT,
+            NVL(t.cramt, 0) AS POAMOUNT,
             t.qtyorder AS QTYORDER,
             t.um AS UM,
             t.qtyexecute AS QTYEXECUTE,
@@ -109,14 +92,6 @@ export async function getPoHistory() {
         });
 
         const rows = result.rows || [];
-
-        // Debug logging - check first row
-        if (rows.length > 0) {
-          const firstRow = rows[0];
-          console.log("🔍 PO History - First row keys:", Object.keys(firstRow));
-          console.log("🔍 PO History - INDENT_NO:", firstRow.INDENT_NO);
-          console.log("🔍 PO History - INDENTER:", firstRow.INDENTER);
-        }
 
         return {
           rows,
