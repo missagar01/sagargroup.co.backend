@@ -1,11 +1,10 @@
-import { fileToDataUrl } from "../middleware/s3Upload2.js";
+import { getProfileImageUrl } from "../middleware/s3Upload2.js";
 import { updateEmpImageService } from "../services/userService.js";
 
 export const patchEmpImage = async (req, res, next) => {
     try {
         const { id } = req.params;
         const authUser = req.user;
-        const bodyProfileImageUrl = req.body?.profile_img;
 
         // AUTH CHECK: User can only update their own image, unless they are admin
         const isAdmin = authUser.role === "admin" || authUser.user_name === "admin";
@@ -15,22 +14,30 @@ export const patchEmpImage = async (req, res, next) => {
             return next(error);
         }
 
-        const profileImageUrl = req.file ? fileToDataUrl(req.file) : bodyProfileImageUrl;
+        // If file was uploaded via multipart, build URL path from disk file
+        // Otherwise fall back to body (for URL string sent directly)
+        let profileImageUrl;
+
+        if (req.file) {
+            // File uploaded — build /uploads/users/filename URL
+            profileImageUrl = getProfileImageUrl(req.file);
+        } else if (req.body?.profile_img) {
+            profileImageUrl = req.body.profile_img.trim();
+        }
 
         if (!profileImageUrl || typeof profileImageUrl !== "string") {
             return res.status(400).json({ message: "profile_img is required" });
         }
 
-        const normalizedProfileImageUrl = profileImageUrl.trim();
-        const isSupportedProfileImage = /^data:image\/(jpeg|jpg|png|gif|webp);base64,[A-Za-z0-9+/=]+$/i.test(
-            normalizedProfileImageUrl
-        );
-
-        if (!isSupportedProfileImage) {
-            return res.status(400).json({ message: "profile_img must be a valid image data URL" });
+        // Validate: must be a /uploads/ path URL (not a base64 data URL)
+        const isValidUrl = profileImageUrl.startsWith("/uploads/");
+        if (!isValidUrl) {
+            return res.status(400).json({
+                message: "profile_img must be a valid upload URL (e.g. /uploads/users/filename.jpg)",
+            });
         }
 
-        const user = await updateEmpImageService(id, normalizedProfileImageUrl);
+        const user = await updateEmpImageService(id, profileImageUrl);
 
         res.json({
             message: "Profile image updated successfully",
