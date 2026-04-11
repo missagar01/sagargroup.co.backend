@@ -25,6 +25,44 @@ const normalizeDepartmentAccess = (value, fallbackDepartment = null) => {
   return normalized.length > 0 ? normalized.join(",") : null;
 };
 
+const normalizeStringValue = (
+  value,
+  { maxLength = 500, trim = true, emptyToNull = false } = {}
+) => {
+  if (value === null) return null;
+  if (value === undefined) return undefined;
+  if (Array.isArray(value)) {
+    value = value
+      .map((item) => (typeof item === "string" ? item : String(item)))
+      .join(", ");
+  }
+
+  let str = typeof value === "string" ? value : String(value);
+  if (trim) {
+    str = str.trim();
+  }
+
+  if (emptyToNull && str === "") {
+    return null;
+  }
+
+  if (maxLength && str.length > maxLength) {
+    return str.substring(0, maxLength);
+  }
+
+  return str;
+};
+
+const sanitizePasswordValue = (value) => {
+  if (value === null || value === undefined) return undefined;
+  const trimmed = typeof value === "string" ? value.trim() : String(value).trim();
+  return trimmed === "" ? undefined : trimmed;
+};
+
+const isEmployeeIdUniqueViolation = (error) =>
+  error?.code === "23505" &&
+  ["users_employee_id_key", "idx_users_employee_id"].includes(error?.constraint);
+
 /*******************************
  * 1) GET USERS
  *******************************/
@@ -101,6 +139,10 @@ export const createUser = async (req, res) => {
       user_access !== undefined ? user_access : departments,
       department
     );
+    const normalizedEmployeeId = normalizeStringValue(employee_id, {
+      maxLength: 500,
+      emptyToNull: true
+    });
 
     // Prepare values array with proper null handling
     const values = [
@@ -113,7 +155,7 @@ export const createUser = async (req, res) => {
       role || 'user',
       status || 'active',
       normalizedDepartmentAccess ?? null,
-      employee_id || null,
+      normalizedEmployeeId,
       user_access1 || null,
       system_access || null,
       page_access || null,
@@ -136,6 +178,12 @@ export const createUser = async (req, res) => {
 
   } catch (error) {
     console.error("❌ Error creating user:", error);
+    if (isEmployeeIdUniqueViolation(error)) {
+      return res.status(409).json({
+        error: "Employee ID already exists",
+        message: "Employee ID already exists. Leave it blank or use a unique value."
+      });
+    }
     res.status(500).json({ error: error.message || "Database error" });
   }
 };
@@ -179,28 +227,6 @@ export const updateUser = async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const normalizeString = (value, { maxLength = 500, trim = true } = {}) => {
-      if (value === null) return null;
-      if (value === undefined) return undefined;
-      if (Array.isArray(value)) {
-        value = value.map(v => (typeof v === "string" ? v : String(v))).join(", ");
-      }
-      let str = typeof value === "string" ? value : String(value);
-      if (trim) {
-        str = str.trim();
-      }
-      if (maxLength && str.length > maxLength) {
-        return str.substring(0, maxLength);
-      }
-      return str;
-    };
-
-    const sanitizePassword = (value) => {
-      if (value === null || value === undefined) return undefined;
-      const trimmed = typeof value === "string" ? value.trim() : String(value).trim();
-      return trimmed === "" ? undefined : trimmed;
-    };
-
     const fieldMap = {
       username: "user_name",
       user_name: "user_name",
@@ -242,7 +268,7 @@ export const updateUser = async (req, res) => {
       division: { maxLength: 500 },
       designation: { maxLength: 500 },
       remark: { maxLength: 1000 },
-      employee_id: { maxLength: 500 },
+      employee_id: { maxLength: 500, emptyToNull: true },
       leave_date: {},
       leave_end_date: {}
     };
@@ -255,7 +281,7 @@ export const updateUser = async (req, res) => {
       }
       const rawValue = normalizedPayload[bodyKey];
       if (columnName === "password") {
-        const sanitized = sanitizePassword(rawValue);
+        const sanitized = sanitizePasswordValue(rawValue);
         if (sanitized === undefined) {
           continue;
         }
@@ -276,7 +302,7 @@ export const updateUser = async (req, res) => {
       }
 
       const rules = sanitizeRules[columnName] || { maxLength: 500 };
-      const sanitized = normalizeString(rawValue, rules);
+      const sanitized = normalizeStringValue(rawValue, rules);
 
       if (sanitized === undefined) {
         continue;
@@ -316,6 +342,12 @@ export const updateUser = async (req, res) => {
       message: error.message,
       stack: error.stack
     });
+    if (isEmployeeIdUniqueViolation(error)) {
+      return res.status(409).json({
+        error: "Employee ID already exists",
+        message: "Employee ID already exists. Leave it blank or use a unique value."
+      });
+    }
     return res.status(500).json({
       error: "Server error",
       message: error.message || "Failed to update user"
