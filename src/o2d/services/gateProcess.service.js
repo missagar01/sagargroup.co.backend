@@ -83,6 +83,15 @@ WHERE t.entity_code = :entityCode
 
 ORDER BY t.vrno ASC`;
 
+const loadingOrderDetailsQuery = `
+SELECT
+    t.item_name,
+    t.qtyorder
+FROM view_order_engine t
+WHERE t.entity_code = :entityCode
+  AND t.vrno = :loadingOrderNumber
+ORDER BY t.item_name ASC`;
+
 async function getGateProcessTimeline(entityCode = "SR") {
   let connection;
   try {
@@ -98,6 +107,29 @@ async function getGateProcessTimeline(entityCode = "SR") {
   }
 }
 
+async function getLoadingOrderDetails(
+  loadingOrderNumber,
+  entityCode = "SR"
+) {
+  let connection;
+  try {
+    connection = await getConnection();
+    const result = await connection.execute(
+      loadingOrderDetailsQuery,
+      { entityCode, loadingOrderNumber },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT }
+    );
+
+    return (result.rows || []).map((row) => ({
+      item_name: row.ITEM_NAME ?? "",
+      qtyorder: row.QTYORDER ?? null,
+    }));
+  } finally {
+    if (connection) await connection.close();
+  }
+}
+
 module.exports = {
   getGateProcessTimeline,
+  getLoadingOrderDetails,
 };
