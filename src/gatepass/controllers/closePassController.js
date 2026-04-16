@@ -6,18 +6,11 @@ import {
 
 export const getGatePasses = async (req, res, next) => {
   try {
-    const { personToMeet, showAll } = req.query;
-    const shouldShowAll = String(showAll || "").toLowerCase() === "true";
-
-    if (!shouldShowAll && !personToMeet) {
-      return res.status(400).json({
-        success: false,
-        message: "personToMeet required"
-      });
-    }
+    const { personToMeet } = req.query;
+    const shouldShowAll = true; // Open to everyone as per request
 
     const data = await fetchGatePassesService(personToMeet, shouldShowAll);
-    res.json({ success: true, data });
+    res.json({ success: true, data: data || [] });
   } catch (err) {
     next(err);
   }
@@ -26,15 +19,8 @@ export const getGatePasses = async (req, res, next) => {
 export const closeGatePass = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { personToMeet, closedBy, showAll } = req.body;
-    const shouldShowAll = Boolean(showAll);
-
-    if (!shouldShowAll && !personToMeet) {
-      return res.status(400).json({
-        success: false,
-        message: "personToMeet required"
-      });
-    }
+    const { personToMeet, closedBy } = req.body;
+    const shouldShowAll = true; // Open to everyone as per request
 
     const visit = await closeGatePassService(id, personToMeet, shouldShowAll);
 
