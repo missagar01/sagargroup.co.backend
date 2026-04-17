@@ -1,6 +1,5 @@
 import { pool, maintenancePool } from "../config/db.js";
 import { query as housekeepingQuery } from "../config/housekeppingdb.js";
-import { refreshDeviceSync } from "../services/deviceSync.js";
 import { getUniqueDepartmentsService, getDivisionWiseTaskCountsService } from "../services/dashboardServices.js";
 
 const now = new Date();
@@ -1316,12 +1315,6 @@ export const getNotDoneTask = async (req, res) => {
     const endDate = qEnd || monthEnd;
 
     if (dashboardType === "checklist") {
-      try {
-        await refreshDeviceSync();
-      } catch (e) {
-        console.error("NotDone Sync Error (continuing):", e);
-      }
-
       const result = await countChecklistSources(
         {
           staffFilter,
@@ -1395,11 +1388,6 @@ export const getNotDoneTask = async (req, res) => {
 
 export const getNotDoneTaskList = async (req, res) => {
   try {
-    // ✅ Optional: Keep if you REALLY want list call to also force sync
-    // If you already run sync in setInterval, you can remove this line to reduce load.
-    // Optimization: Fire and forget to avoid blocking UI
-    refreshDeviceSync().catch(err => console.error("Background sync error:", err));
-
     const {
       role,
       username,

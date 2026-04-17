@@ -23,6 +23,17 @@ const formatDateString = (date) => {
   return `${y}-${m}-${day}`;
 };
 
+const normalizeEmployeeCode = (value) => {
+  const text = String(value ?? "").trim().toUpperCase();
+  if (!text) return "";
+  if (/^\d+$/.test(text)) return String(Number(text));
+
+  const prefixed = text.match(/^([A-Z]+)0*(\d+)$/);
+  if (prefixed) return `${prefixed[1]}${Number(prefixed[2])}`;
+
+  return text;
+};
+
 const getAdjacentDate = (dateStr, offsetDays) => {
   const base = new Date(dateStr);
   base.setDate(base.getDate() + offsetDays);
@@ -52,7 +63,13 @@ const getAllActiveEmployeeIds = async () => {
       WHERE employee_id IS NOT NULL 
         AND TRIM(employee_id) <> ''
     `);
-    return rows.map(r => String(r.employee_id).trim());
+    return [
+      ...new Set(
+        rows
+          .map((r) => normalizeEmployeeCode(r.employee_id))
+          .filter(Boolean)
+      ),
+    ];
   } catch (error) {
     console.error("❌ Error fetching active employees:", error);
     return [];
@@ -78,7 +95,7 @@ const batchMarkTasksAsNotDone = async (employeeIds, targetDate, submissionTime) 
   const normalizedEmployeeIds = [
     ...new Set(
       employeeIds
-        .map((id) => (id ? String(id).trim().toLowerCase() : ""))
+        .map((id) => normalizeEmployeeCode(id))
         .filter((v) => v.length > 0)
     ),
   ];
@@ -88,17 +105,24 @@ const batchMarkTasksAsNotDone = async (employeeIds, targetDate, submissionTime) 
 
   const { rows } = await pool.query(
     `
-      SELECT DISTINCT user_name
+      SELECT DISTINCT employee_id, user_name
       FROM users
-      WHERE LOWER(COALESCE(employee_id::text, '')) = ANY($1::text[])
+      WHERE employee_id IS NOT NULL
+        AND TRIM(employee_id) <> ''
         AND user_name IS NOT NULL
         AND TRIM(user_name) <> ''
-    `,
-    [normalizedEmployeeIds]
+    `
   );
 
+  const employeeIdSet = new Set(normalizedEmployeeIds);
+
   const normalizedNames = [
-    ...new Set(rows.map((r) => r.user_name?.trim().toLowerCase()).filter(Boolean)),
+    ...new Set(
+      rows
+        .filter((r) => employeeIdSet.has(normalizeEmployeeCode(r.employee_id)))
+        .map((r) => r.user_name?.trim().toLowerCase())
+        .filter(Boolean)
+    ),
   ];
 
   if (!normalizedNames.length)
@@ -244,7 +268,7 @@ const processLogs = async (allLogs, today, startHour) => {
     const punch = String(log?.PunchDirection || "").trim().toLowerCase();
     if (punch !== "in") continue;
 
-    const emp = String(log?.EmployeeCode || "").trim();
+    const emp = normalizeEmployeeCode(log?.EmployeeCode);
     const dt = new Date(log?.LogDate);
     if (!emp || Number.isNaN(dt.getTime())) continue;
 

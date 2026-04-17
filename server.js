@@ -151,20 +151,33 @@ if (DEVICE_SYNC_ENABLED) {
     const hour = now.getHours();
     const minute = now.getMinutes();
 
-    // Run ONLY at 11:00 AM (IST)
-    // Allow 8-minute window (minute < 8)
+    // Run only within the first 8 minutes of the target hour.
     const isMorningRun = hour === 11;
+    const isNightRun = hour === 23;
 
-    if (!(isMorningRun && minute < 8)) return;
+    if (minute >= 8 || (!isMorningRun && !isNightRun)) return;
 
     if (isSyncRunning) return;
     isSyncRunning = true;
 
     try {
       const {
+        refreshDeviceSync,
         markAllOverdueTasksAsNotDone,
         assignTaskService,
       } = await loadChecklistSyncModules();
+
+      const todayDay = String(now.getDate()).padStart(2, '0');
+      const todayMonth = String(now.getMonth() + 1).padStart(2, '0');
+      const todayYear = now.getFullYear();
+      const todayStr = `${todayYear}-${todayMonth}-${todayDay}`;
+
+      if (isNightRun) {
+        console.log(`⏱ Night (11 PM) Device Sync triggered for ${todayStr}`);
+        const syncResult = await refreshDeviceSync(todayStr, 23);
+        console.log(`✅ Night Device Sync completed for ${todayStr}:`, syncResult);
+        return;
+      }
 
       // Calculate IST Yesterday string (YYYY-MM-DD)
       const yesterday = new Date(now);
