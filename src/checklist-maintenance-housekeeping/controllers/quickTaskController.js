@@ -1,4 +1,4 @@
-import { pool } from "../config/db.js";
+import { pool, maintenancePool } from "../config/db.js";
 
 
 
@@ -123,6 +123,83 @@ export const fetchDelegation = async (
     return { data: dataRes.rows, total };
   } catch (err) {
     console.log("Error in fetchDelegation:", err);
+    return { data: [], total: 0 };
+  }
+};
+
+export const fetchMaintenance = async (
+  page = 0,
+  pageSize = 50,
+  nameFilter = "",
+  startDate,
+  endDate
+) => {
+  try {
+    const offset = page * pageSize;
+    const filters = ["actual_date IS NULL"];
+    const params = [];
+    let paramIndex = 1;
+
+    const hasDateRange = startDate && endDate;
+    if (hasDateRange) {
+      filters.push(`task_start_date >= $${paramIndex++}`);
+      params.push(`${startDate} 00:00:00`);
+      filters.push(`task_start_date <= $${paramIndex++}`);
+      params.push(`${endDate} 23:59:59`);
+    }
+
+    if (nameFilter) {
+      filters.push(`LOWER(doer_name) = LOWER($${paramIndex++})`);
+      params.push(nameFilter);
+    }
+
+    const whereClause = filters.join(" AND ");
+
+    const dataQuery = `
+      SELECT DISTINCT ON (LOWER(COALESCE(doer_name, '')), LOWER(COALESCE(description, '')))
+        id AS task_id,
+        COALESCE(doer_department, machine_department) AS department,
+        given_by,
+        doer_name AS name,
+        description AS task_description,
+        task_start_date,
+        actual_date AS submission_date,
+        frequency,
+        task_type,
+        priority,
+        machine_name,
+        serial_no,
+        task_status AS status
+      FROM maintenance_task_assign
+      WHERE ${whereClause}
+      ORDER BY
+        LOWER(COALESCE(doer_name, '')),
+        LOWER(COALESCE(description, '')),
+        task_start_date ASC
+      LIMIT $${paramIndex++}
+      OFFSET $${paramIndex}
+    `;
+
+    const dataParams = [...params, pageSize, offset];
+
+    const countQuery = `
+      SELECT COUNT(*) AS count FROM (
+        SELECT 1
+        FROM maintenance_task_assign
+        WHERE ${whereClause}
+        GROUP BY LOWER(COALESCE(doer_name, '')), LOWER(COALESCE(description, ''))
+      ) AS subquery
+    `;
+
+    const [dataRes, countRes] = await Promise.all([
+      maintenancePool.query(dataQuery, dataParams),
+      maintenancePool.query(countQuery, params),
+    ]);
+
+    const total = parseInt(countRes.rows[0]?.count ?? 0, 10);
+    return { data: dataRes.rows, total };
+  } catch (err) {
+    console.log("Error in fetchMaintenance:", err);
     return { data: [], total: 0 };
   }
 };
@@ -259,7 +336,7 @@ export const updateChecklistTask = async (updatedTask, originalTask) => {
 // ------------------------ FETCH USERS (UNIQUE NAMES) ------------------------
 export const fetchUsers = async () => {
   try {
-    const sql = `
+    const checklistAndDelegationSql = `
       SELECT name
       FROM (
         SELECT DISTINCT name FROM checklist WHERE name IS NOT NULL AND name <> ''
@@ -269,9 +346,25 @@ export const fetchUsers = async () => {
       ORDER BY LOWER(name)
     `;
 
-    const { rows } = await pool.query(sql);
-    // Normalize shape similar to existing frontend expectation (user_name)
-    return rows.map((r) => ({ user_name: r.name }));
+    const maintenanceSql = `
+      SELECT DISTINCT doer_name AS name
+      FROM maintenance_task_assign
+      WHERE doer_name IS NOT NULL AND doer_name <> ''
+      ORDER BY LOWER(doer_name)
+    `;
+
+    const [mainResult, maintenanceResult] = await Promise.all([
+      pool.query(checklistAndDelegationSql),
+      maintenancePool.query(maintenanceSql),
+    ]);
+
+    const mergedNames = [...new Set(
+      [...mainResult.rows, ...maintenanceResult.rows]
+        .map((row) => (typeof row?.name === "string" ? row.name.trim() : ""))
+        .filter(Boolean)
+    )].sort((left, right) => left.localeCompare(right));
+
+    return mergedNames.map((name) => ({ user_name: name }));
   } catch (err) {
     console.log(err);
     return [];

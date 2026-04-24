@@ -2,6 +2,7 @@ import express from "express";
 import {
   fetchChecklist,
   fetchDelegation,
+  fetchMaintenance,
   deleteChecklistTasks,
   deleteDelegationTasks,
   updateChecklistTask,
@@ -23,6 +24,17 @@ router.post("/checklist", async (req, res) => {
 
 router.post("/delegation", async (req, res) => {
   const result = await fetchDelegation(
+    req.body.page,
+    req.body.pageSize,
+    req.body.nameFilter,
+    req.body.startDate,
+    req.body.endDate
+  );
+  res.json(result);
+});
+
+router.post("/maintenance", async (req, res) => {
+  const result = await fetchMaintenance(
     req.body.page,
     req.body.pageSize,
     req.body.nameFilter,
