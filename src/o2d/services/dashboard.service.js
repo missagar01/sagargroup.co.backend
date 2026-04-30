@@ -195,7 +195,8 @@ select round(avg(average),0) as average from
 from view_order_engine t
 where t.entity_code='SR'
       and t.tcode='E'
-      and t.vrdate >= DATE '2025-04-01'
+      and t.vrdate >= TRUNC(SYSDATE, 'MM')
+      and t.vrdate < ADD_MONTHS(TRUNC(SYSDATE, 'MM'), 1)
       and t.div_code='PM'
 group by t.vrdate
 order by t.vrdate )
