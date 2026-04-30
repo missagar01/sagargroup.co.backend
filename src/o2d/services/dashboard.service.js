@@ -90,20 +90,31 @@ SELECT DISTINCT party_name, item_name, sales_person, state FROM base_filters
 `;
 
 const SAUDA_AVERAGE_QUERY = `
-select case when t.div_code = 'PM' then 'PIPE'
-       when t.div_code = 'RP' then 'STRIPS'
-       when t.div_code = 'SM' then 'BILLET'
-       end as item,
-       round((sum((t.rate*((t.qtyorder - nvl(t.SALE_INVOICE_QTY,0)) + nvl(t.SRET_QTY,0))))/sum(((t.qtyorder - nvl(t.SALE_INVOICE_QTY,0)) + nvl(t.SRET_QTY,0)))),0) as average
-from view_order_engine t
-where t.entity_code='SR'
-      and t.tcode='E'
-      and t.approveddate is not null
-      and t.closeddate is null
-      and ((t.qtyorder - nvl(t.SALE_INVOICE_QTY,0)) + nvl(t.SRET_QTY,0)) > 0
-      and t.vrdate >= TO_DATE(:p_from_date, 'YYYY-MM-DD')
-      and t.vrdate <  TO_DATE(:p_to_date,   'YYYY-MM-DD') + 1
-group by t.div_code
+SELECT t.vrdate AS order_date,
+       t.vrno,
+       lhs_utility.get_name('emp_code',
+           CASE
+             WHEN t.emp_code IN ('E0010','E0001','E0014') THEN 'E0003'
+             ELSE t.emp_code
+           END) AS sales_person,
+       lhs_utility.get_name('acc_code', t.acc_code) AS party_name,
+       lhs_utility.get_name('item_group', t.item_group) AS item_name,
+       t.qtyorder AS order_quantity,
+       NVL(t.rate, 0) AS basic_rate,
+       NVL(t.SALE_INVOICE_QTY, 0) AS dispatched_quantity,
+       (NVL(t.qtyorder, 0) - NVL(t.SALE_INVOICE_QTY, 0)) AS balance_quantity,
+       NVL(
+         (NVL(t.qtyorder, 0) - NVL(t.SALE_INVOICE_QTY, 0)) * NVL(t.rate, 0),
+         0
+       ) AS amount
+FROM view_order_engine t
+WHERE t.entity_code = 'SR'
+  AND t.tcode = 'E'
+  AND t.vrdate >= DATE '2025-04-01'
+  AND t.vrdate < TO_DATE(:p_to_date, 'YYYY-MM-DD') + 1
+  AND (NVL(t.qtyorder, 0) - NVL(t.SALE_INVOICE_QTY, 0)) > 0
+  AND t.closeddate IS NULL
+ORDER BY t.vrdate ASC
 `;
 
 const ALL_SAUDA_AVERAGE_QUERY = `
@@ -147,40 +158,35 @@ GROUP BY
 `;
 
 const SALES_AVG_QUERY = `
-SELECT
-  sales_person,
-  item,
-  ROUND(
-    SUM(tax_onamount) / NULLIF(SUM(qtyissued), 0),
-    0
-  ) AS average
-FROM (
-  SELECT
-    CASE
-      WHEN lhs_utility.get_name('emp_code', t.emp_code)
-           IN ('DIRECT', 'DC GOUTAM', 'P.S GEDAM')
-      THEN 'ANIL MISHRA'
-      ELSE lhs_utility.get_name('emp_code', t.emp_code)
-    END AS sales_person,
-    CASE
-      WHEN t.div_code = 'PM' THEN 'PIPE'
-      WHEN t.div_code = 'RP' THEN 'STRIPS'
-      WHEN t.div_code = 'SM' THEN 'BILLET'
-    END AS item,
-    t.tax_onamount,
-    t.qtyissued
-  FROM view_itemtran_engine t
-  WHERE t.entity_code = 'SR'
-    AND t.series = 'SA'
-    AND t.vrdate >= TO_DATE(:p_from_date, 'YYYY-MM-DD')
-    AND t.vrdate <  TO_DATE(:p_to_date,   'YYYY-MM-DD') + 1
-)
-GROUP BY
-  sales_person,
-  item
-ORDER BY
-  sales_person,
-  item
+SELECT CASE
+         WHEN lhs_utility.get_name('emp_code', t.emp_code)
+              IN ('DIRECT', 'DC GOUTAM', 'P.S GEDAM')
+         THEN 'ANIL MISHRA'
+         ELSE lhs_utility.get_name('emp_code', t.emp_code)
+       END AS sales_person,
+       t.vrno,
+       TO_CHAR(t.vrdate, 'dd-mm-yyyy') AS fidate,
+       lhs_utility.get_name('acc_code', t.acc_code) AS partyname,
+       t.truckno,
+       lhs_utility.get_name('item_group', t.item_group) AS itemname,
+       SUM(t.qtyissued) AS quantity,
+       SUM(NVL(t.afield1, 0) + NVL(t.afield2, 0) + NVL(t.afield3, 0)) AS dramt,
+       t.vrdate
+FROM view_itemtran_engine t
+WHERE t.entity_code = 'SR'
+  AND t.series = 'SA'
+  AND t.item_nature = 'FG'
+  AND t.vrdate >= TO_DATE(:p_from_date, 'YYYY-MM-DD')
+  AND t.vrdate <= TO_DATE(:p_to_date, 'YYYY-MM-DD')
+GROUP BY t.vrno,
+         t.vrdate,
+         t.emp_code,
+         lhs_utility.get_name('acc_code', t.acc_code),
+         t.truckno,
+         t.div_code,
+         t.acc_code,
+         t.item_group
+ORDER BY t.vrno ASC
 `;
 
 const SAUDA_RATE_TREND_QUERY = `
@@ -359,6 +365,123 @@ function parseDateParam(value) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+function toNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
+}
+
+function normalizeItemBucket(value) {
+  const item = String(value || "").trim().toUpperCase();
+  if (!item) return null;
+  if (item.includes("PIPE")) return "PIPE";
+  if (item.includes("STRIP")) return "STRIPS";
+  if (item.includes("BILLET")) return "BILLET";
+  return null;
+}
+
+function normalizeSalesPerson(value) {
+  const salesPerson = String(value || "").trim();
+  if (!salesPerson) return null;
+  if (["DIRECT", "DC GOUTAM", "P.S GEDAM"].includes(salesPerson.toUpperCase())) {
+    return "ANIL MISHRA";
+  }
+  return salesPerson;
+}
+
+function pushAverageBucket(map, key, meta, numerator, denominator) {
+  if (!key || denominator <= 0) return;
+
+  const existing = map.get(key) || { ...meta, numerator: 0, denominator: 0 };
+  existing.numerator += numerator;
+  existing.denominator += denominator;
+  map.set(key, existing);
+}
+
+function finalizeAverageBuckets(map, includeSalesPerson = false) {
+  return Array.from(map.values())
+    .filter((entry) => entry.denominator > 0)
+    .map((entry) => {
+      const row = {
+        ITEM: entry.item,
+        AVERAGE: Math.round(entry.numerator / entry.denominator),
+      };
+
+      if (includeSalesPerson) {
+        row.SALES_PERSON = entry.salesPerson;
+      }
+
+      return row;
+    })
+    .sort((a, b) => {
+      if (includeSalesPerson && a.SALES_PERSON !== b.SALES_PERSON) {
+        return String(a.SALES_PERSON).localeCompare(String(b.SALES_PERSON));
+      }
+      return String(a.ITEM).localeCompare(String(b.ITEM));
+    });
+}
+
+function buildSaudaAverageData(rows = []) {
+  const overallMap = new Map();
+  const salesMap = new Map();
+
+  rows.forEach((row) => {
+    const item = normalizeItemBucket(row.ITEM_NAME);
+    const salesPerson = normalizeSalesPerson(row.SALES_PERSON);
+    const balanceQuantity = toNumber(row.BALANCE_QUANTITY);
+    const amount = toNumber(row.AMOUNT);
+    const numerator = amount;
+    const denominator = balanceQuantity;
+
+    if (!item || denominator <= 0) return;
+
+    pushAverageBucket(overallMap, item, { item }, numerator, denominator);
+    if (salesPerson) {
+      pushAverageBucket(
+        salesMap,
+        `${salesPerson}::${item}`,
+        { salesPerson, item },
+        numerator,
+        denominator
+      );
+    }
+  });
+
+  return {
+    overall: finalizeAverageBuckets(overallMap),
+    bySalesPerson: finalizeAverageBuckets(salesMap, true),
+  };
+}
+
+function buildSalesAverageData(rows = []) {
+  const overallMap = new Map();
+  const salesMap = new Map();
+
+  rows.forEach((row) => {
+    const item = normalizeItemBucket(row.ITEMNAME);
+    const salesPerson = normalizeSalesPerson(row.SALES_PERSON);
+    const quantity = toNumber(row.QUANTITY);
+    const dramt = toNumber(row.DRAMT);
+
+    if (!item || quantity <= 0) return;
+
+    pushAverageBucket(overallMap, item, { item }, dramt, quantity);
+    if (salesPerson) {
+      pushAverageBucket(
+        salesMap,
+        `${salesPerson}::${item}`,
+        { salesPerson, item },
+        dramt,
+        quantity
+      );
+    }
+  });
+
+  return {
+    overall: finalizeAverageBuckets(overallMap),
+    bySalesPerson: finalizeAverageBuckets(salesMap, true),
+  };
+}
+
 async function getDashboardData({
   fromDate,
   toDate,
@@ -413,6 +536,10 @@ async function getDashboardData({
       p_to_date: safeTo,
     };
 
+    const saudaDateBinds = {
+      p_to_date: safeTo,
+    };
+
     let connection;
     try {
       connection = await getConnection();
@@ -420,7 +547,7 @@ async function getDashboardData({
         throw new Error("Failed to establish Oracle database connection");
       }
 
-      const [result, monthlyRes, pendingRes, saudaAvgRes, salesAvgRes, saudaRateRes, gdRes, filtersRes, allSaudaAvgRes, stateDistributionRes] = await Promise.all([
+      const [result, monthlyRes, pendingRes, saudaAvgRes, salesAvgRes, saudaRateRes, gdRes, filtersRes, stateDistributionRes] = await Promise.all([
         connection.execute(BASE_DASHBOARD_QUERY, binds, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         }),
@@ -430,7 +557,7 @@ async function getDashboardData({
         connection.execute(PENDING_ORDERS_STATS_QUERY, {}, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         }),
-        connection.execute(SAUDA_AVERAGE_QUERY, summaryDateBinds, {
+        connection.execute(SAUDA_AVERAGE_QUERY, saudaDateBinds, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         }),
         connection.execute(SALES_AVG_QUERY, summaryDateBinds, {
@@ -443,9 +570,6 @@ async function getDashboardData({
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         }),
         connection.execute(FILTERS_QUERY, {}, {
-          outFormat: oracledb.OUT_FORMAT_OBJECT,
-        }),
-        connection.execute(ALL_SAUDA_AVERAGE_QUERY, {}, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         }),
         connection.execute(STATE_DISTRIBUTION_QUERY, {}, {
@@ -468,9 +592,12 @@ async function getDashboardData({
       // const pendingOrdersTotal = pRow.TOTAL || 0;
       // const conversionRatio = pRow.CONVERSION_RATIO || '0%';
 
-      const saudaAvg = saudaAvgRes.rows || [];
-      const salesAvg = salesAvgRes.rows || [];
-      const allSaudaAvg = allSaudaAvgRes.rows || [];
+      const saudaAverageData = buildSaudaAverageData(saudaAvgRes.rows || []);
+      const salesAverageData = buildSalesAverageData(salesAvgRes.rows || []);
+      const saudaAvg = saudaAverageData.overall;
+      const allSaudaAvg = saudaAverageData.bySalesPerson;
+      const salesAvg = salesAverageData.overall;
+      const allSalesAvg = salesAverageData.bySalesPerson;
       const saudaRate2026 = saudaRateRow.AVERAGE || 0;
       // const monthlyGd = gdRow.MONTHLY_GD || 0;
       // const dailyGd = gdRow.DAILY_GD || 0;
@@ -514,6 +641,7 @@ async function getDashboardData({
           saudaAvg,
           allSaudaAvg,
           salesAvg,
+          allSalesAvg,
           saudaRate2026,
           stateDistribution,
         },
