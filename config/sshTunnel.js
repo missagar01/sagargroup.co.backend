@@ -38,6 +38,14 @@ const PORT_SCAN_LIMIT = parseInt(
   process.env.SSH_LOCAL_PORT_SCAN_LIMIT || "10",
   10
 );
+const DB_TUNNEL_SOCKET_TIMEOUT_MS = parseInt(
+  process.env.SSH_DB_TUNNEL_SOCKET_TIMEOUT_MS || "0",
+  10
+);
+const DB_TUNNEL_KEEPALIVE_MS = parseInt(
+  process.env.SSH_DB_TUNNEL_KEEPALIVE_MS || "30000",
+  10
+);
 
 let sshClient = null;
 let oracleTunnelServer = null;
@@ -226,8 +234,10 @@ function createTunnelServer(
 
       console.log(`[SSH] Local connection received for ${serviceName}`);
 
-      localSocket.setTimeout(300000);
-      localSocket.setKeepAlive(true, 60000);
+      // Database pools keep sockets idle between requests. Timing them out at the
+      // tunnel layer causes intermittent "socket hang up"/ECONNRESET in production.
+      localSocket.setTimeout(DB_TUNNEL_SOCKET_TIMEOUT_MS);
+      localSocket.setKeepAlive(true, DB_TUNNEL_KEEPALIVE_MS);
 
       client.forwardOut(
         localSocket.localAddress || "127.0.0.1",

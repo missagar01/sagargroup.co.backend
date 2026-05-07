@@ -3,14 +3,18 @@ import { getConnection } from "../config/db.js";
 import oracledb from "oracledb";
 import { getOrSetCache, cacheKeys, DEFAULT_TTL } from "./redisCache.js";
 
+function normalizeCacheScope(fromDate) {
+  return fromDate || "all";
+}
+
 /**
  * Get Pending Repair Gate Pass
  * Query: P3 series gate passes that are not yet received (A3)
  * Uses Redis cache for fast retrieval
  */
-export async function getPendingRepairGatePass() {
+export async function getPendingRepairGatePass(fromDate = null) {
   return await getOrSetCache(
-    cacheKeys.gatePassPending(),
+    cacheKeys.gatePassPending(normalizeCacheScope(fromDate)),
     async () => {
       const conn = await getConnection();
       try {
@@ -28,17 +32,23 @@ export async function getPendingRepairGatePass() {
           FROM view_itemtran_engine t
           WHERE t.entity_code = 'SR'
             AND SUBSTR(t.vrno, 1, 2) = 'P3'
+            AND t.vrdate >= ${
+              fromDate ? "TO_DATE(:fromDate, 'YYYY-MM-DD')" : "DATE '2025-04-01'"
+            }
             AND t.qty1 is null
             AND t.vrno NOT IN (
               SELECT t.ref1_vrno
               FROM view_itemtran_engine t
               WHERE t.entity_code = 'SR'
                 AND SUBSTR(t.vrno, 1, 2) = 'A3'
+                AND t.vrdate >= ${
+                  fromDate ? "TO_DATE(:fromDate, 'YYYY-MM-DD')" : "DATE '2025-04-01'"
+                }
             )
           ORDER BY t.vrdate DESC, t.vrno DESC
         `;
 
-        const result = await conn.execute(sql, [], {
+        const result = await conn.execute(sql, fromDate ? { fromDate } : {}, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         });
 
@@ -65,9 +75,9 @@ export async function getPendingRepairGatePass() {
  * Query: A3 series gate passes (received)
  * Uses Redis cache for fast retrieval
  */
-export async function getReceivedRepairGatePass() {
+export async function getReceivedRepairGatePass(fromDate = null) {
   return await getOrSetCache(
-    cacheKeys.gatePassReceived(),
+    cacheKeys.gatePassReceived(normalizeCacheScope(fromDate)),
     async () => {
       const conn = await getConnection();
       try {
@@ -86,10 +96,13 @@ export async function getReceivedRepairGatePass() {
           FROM view_itemtran_engine t
           WHERE t.entity_code = 'SR'
             AND t.series = 'A3'
+            AND t.vrdate >= ${
+              fromDate ? "TO_DATE(:fromDate, 'YYYY-MM-DD')" : "DATE '2025-04-01'"
+            }
           ORDER BY t.vrdate DESC, t.vrno DESC
         `;
 
-        const result = await conn.execute(sql, [], {
+        const result = await conn.execute(sql, fromDate ? { fromDate } : {}, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         });
 

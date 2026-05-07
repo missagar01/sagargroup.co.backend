@@ -3,7 +3,21 @@ import oracledb from "../config/oracleClient.js";
 import { getOrSetCache, cacheKeys, DEFAULT_TTL } from "./redisCache.js";
 
 const RETURNABLE_FROM_DATE = "TO_DATE('01-APR-2025', 'DD-MON-YYYY')";
-const RETURNABLE_SOURCE_CTE = `
+
+function normalizeCacheScope(fromDate) {
+  return fromDate || "all";
+}
+
+function getReturnableFromDateSql(fromDate) {
+  return fromDate
+    ? "TO_DATE(:fromDate, 'YYYY-MM-DD')"
+    : RETURNABLE_FROM_DATE;
+}
+
+function buildReturnableSourceCte(fromDate = null) {
+  const scopedFromDate = getReturnableFromDateSql(fromDate);
+
+  return `
   WITH issued_rows AS (
     SELECT
       t.vrno,
@@ -20,7 +34,7 @@ const RETURNABLE_SOURCE_CTE = `
     FROM view_itemtran_engine t
     WHERE t.entity_code = 'SR'
       AND t.series IN ('R3', 'N3')
-      AND t.vrdate >= ${RETURNABLE_FROM_DATE}
+      AND t.vrdate >= ${scopedFromDate}
   ),
   received_rows AS (
     SELECT
@@ -31,9 +45,11 @@ const RETURNABLE_SOURCE_CTE = `
     WHERE a.entity_code = 'SR'
       AND a.trantype = 'RGP'
       AND a.ref1_vrno IS NOT NULL
+      AND a.vrdate >= ${scopedFromDate}
     GROUP BY a.ref1_vrno, a.item_code
   )
 `;
+}
 
 async function withOracleConnection(queryFn) {
   const conn = await getConnection();
@@ -50,7 +66,7 @@ export async function getReturnableStats() {
     async () =>
       withOracleConnection(async (conn) => {
         const sql = `
-          ${RETURNABLE_SOURCE_CTE}
+          ${buildReturnableSourceCte()}
           SELECT
             COUNT(*) AS total_count,
             COUNT(CASE WHEN i.series = 'R3' THEN 1 END) AS returnable_count,
@@ -78,13 +94,13 @@ export async function getReturnableStats() {
   );
 }
 
-export async function getReturnableDetails() {
+export async function getReturnableDetails(fromDate = null) {
   return getOrSetCache(
-    cacheKeys.returnableDetails(),
+    cacheKeys.returnableDetails(normalizeCacheScope(fromDate)),
     async () =>
       withOracleConnection(async (conn) => {
         const sql = `
-          ${RETURNABLE_SOURCE_CTE}
+          ${buildReturnableSourceCte(fromDate)}
           SELECT
             CASE
               WHEN i.series = 'R3' THEN 'RETURNABLE'
@@ -113,7 +129,11 @@ export async function getReturnableDetails() {
           ORDER BY i.vrdate DESC
         `;
 
-        const result = await conn.execute(sql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+        const result = await conn.execute(
+          sql,
+          fromDate ? { fromDate } : {},
+          { outFormat: oracledb.OUT_FORMAT_OBJECT }
+        );
         return result.rows || [];
       }),
     DEFAULT_TTL.RETURNABLE

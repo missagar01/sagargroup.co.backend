@@ -34,13 +34,17 @@ function toNumber(field) {
   return Number.isFinite(num) ? num : 0;
 }
 
+function normalizeCacheScope(fromDate) {
+  return fromDate || "all";
+}
+
 /**
  * 🔹 Invalidate caches (call from controller after approve/create)
  */
 export async function invalidateIndentCaches() {
   await Promise.all([
-    deleteCache(cacheKeys.indentPending()),
-    deleteCache(cacheKeys.indentHistory()),
+    deleteCache(cacheKeys.indentPendingPattern()),
+    deleteCache(cacheKeys.indentHistoryPattern()),
     deleteCache(cacheKeys.indentDashboard()),
   ]);
 }
@@ -49,9 +53,9 @@ export async function invalidateIndentCaches() {
    PENDING INDENTS (NO PAGINATION)
    ============================ */
 
-export async function getPending() {
+export async function getPending(fromDate = null) {
   return await getOrSetCache(
-    cacheKeys.indentPending(),
+    cacheKeys.indentPending(normalizeCacheScope(fromDate)),
     async () => {
       const conn = await getConnection();
       try {
@@ -59,7 +63,9 @@ export async function getPending() {
           t.entity_code = 'SR'
           AND t.po_no IS NULL
           AND t.cancelleddate IS NULL
-          AND t.vrdate >= DATE '2025-04-01'
+          AND t.vrdate >= ${
+            fromDate ? "TO_DATE(:fromDate, 'YYYY-MM-DD')" : "DATE '2025-04-01'"
+          }
         `;
 
         const sql = `
@@ -83,7 +89,7 @@ export async function getPending() {
           ORDER BY t.vrdate DESC, t.vrno DESC
         `;
 
-        const result = await conn.execute(sql, [], {
+        const result = await conn.execute(sql, fromDate ? { fromDate } : {}, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         });
 
@@ -100,9 +106,9 @@ export async function getPending() {
    HISTORY INDENTS (NO PAGINATION)
    ============================ */
 
-export async function getHistory() {
+export async function getHistory(fromDate = null) {
   return await getOrSetCache(
-    cacheKeys.indentHistory(),
+    cacheKeys.indentHistory(normalizeCacheScope(fromDate)),
     async () => {
       const conn = await getConnection();
       try {
@@ -149,10 +155,15 @@ export async function getHistory() {
 
         FROM view_indent_engine t
         WHERE t.entity_code = 'SR'
+          ${
+            fromDate
+              ? "AND t.vrdate >= TO_DATE(:fromDate, 'YYYY-MM-DD')"
+              : ""
+          }
         ORDER BY t.vrdate DESC, t.vrno DESC
         `;
 
-        const result = await conn.execute(sql, [], {
+        const result = await conn.execute(sql, fromDate ? { fromDate } : {}, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         });
 

@@ -2,9 +2,13 @@ import { getConnection } from "../config/db.js";
 import oracledb from "oracledb";
 import { getOrSetCache, cacheKeys, DEFAULT_TTL } from "./redisCache.js";
 
-export async function getPoPending() {
+function normalizeCacheScope(fromDate) {
+  return fromDate || "all";
+}
+
+export async function getPoPending(fromDate = null) {
   return getOrSetCache(
-    cacheKeys.poPending(),
+    cacheKeys.poPending(normalizeCacheScope(fromDate)),
     async () => {
       const conn = await getConnection();
       try {
@@ -31,11 +35,14 @@ export async function getPoPending() {
           WHERE t.entity_code = 'SR'
             AND t.series = 'U3'
             AND NVL(t.qtycancelled, 0) = 0
+            AND t.vrdate >= ${
+              fromDate ? "TO_DATE(:fromDate, 'YYYY-MM-DD')" : "DATE '2025-04-01'"
+            }
             AND NVL(t.qtyexecute, 0) < NVL(t.qtyorder, 0)
           ORDER BY t.vrdate DESC, t.vrno DESC
         `;
 
-        const result = await conn.execute(sql, [], {
+        const result = await conn.execute(sql, fromDate ? { fromDate } : {}, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         });
 
@@ -53,9 +60,9 @@ export async function getPoPending() {
   );
 }
 
-export async function getPoHistory() {
+export async function getPoHistory(fromDate = null) {
   return getOrSetCache(
-    cacheKeys.poHistory(),
+    cacheKeys.poHistory(normalizeCacheScope(fromDate)),
     async () => {
       const conn = await getConnection();
       try {
@@ -82,12 +89,14 @@ export async function getPoHistory() {
           WHERE t.entity_code = 'SR'
             AND t.series = 'U3'
             AND (t.qtycancelled IS NULL OR t.qtycancelled = 0)
-            AND t.vrdate >= DATE '2025-04-01'
+            AND t.vrdate >= ${
+              fromDate ? "TO_DATE(:fromDate, 'YYYY-MM-DD')" : "DATE '2025-04-01'"
+            }
             AND (NVL(t.qtyorder, 0) - NVL(t.qtyexecute, 0)) <= 0
           ORDER BY t.vrdate DESC, t.vrno DESC
         `;
 
-        const result = await conn.execute(sql, [], {
+        const result = await conn.execute(sql, fromDate ? { fromDate } : {}, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         });
 

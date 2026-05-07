@@ -10,6 +10,21 @@ import * as poService from "./po.service.js";
 import * as repairGatePassService from "./repairGatePass.service.js";
 import * as returnableService from "./returnable.service.js";
 
+const DASHBOARD_DEPENDENCY_TIMEOUT_MS = Number(
+  process.env.STORE_DASHBOARD_DEPENDENCY_TIMEOUT_MS || 8000
+);
+const DASHBOARD_ORACLE_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.STORE_DASHBOARD_ORACLE_CONCURRENCY || 3)
+);
+const GOOGLE_FEEDBACK_TIMEOUT_MS = Number(
+  process.env.STORE_DASHBOARD_FEEDBACK_TIMEOUT_MS || 5000
+);
+const GOOGLE_FEEDBACK_MAX_ATTEMPTS = Math.max(
+  1,
+  Number(process.env.STORE_DASHBOARD_FEEDBACK_MAX_ATTEMPTS || 2)
+);
+
 function isMissingTableError(error) {
   return String(error?.message || "").includes("does not exist");
 }
@@ -41,6 +56,50 @@ function buildPgFallbackRows(type) {
   return [];
 }
 
+function getCurrentMonthStart() {
+  const currentMonthStart = new Date();
+  currentMonthStart.setDate(1);
+  currentMonthStart.setHours(0, 0, 0, 0);
+  return currentMonthStart.getTime();
+}
+
+function getCurrentMonthStartDate() {
+  const currentMonthStart = new Date();
+  currentMonthStart.setDate(1);
+  currentMonthStart.setHours(0, 0, 0, 0);
+
+  const year = currentMonthStart.getFullYear();
+  const month = String(currentMonthStart.getMonth() + 1).padStart(2, "0");
+  const day = String(currentMonthStart.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function parseRowDate(row, keys) {
+  for (const key of keys) {
+    const value = row?.[key];
+    if (!value) {
+      continue;
+    }
+
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.getTime();
+    }
+  }
+
+  return null;
+}
+
+function filterRowsFromCurrentMonth(rows, keys) {
+  const monthStart = getCurrentMonthStart();
+
+  return (rows || []).filter((row) => {
+    const parsedTime = parseRowDate(row, keys);
+    return parsedTime !== null && parsedTime >= monthStart;
+  });
+}
+
 async function runDashboardPgQuery(label, queryText, fallbackType = "list") {
   try {
     return await pool.query(queryText);
@@ -56,15 +115,141 @@ async function runDashboardPgQuery(label, queryText, fallbackType = "list") {
   }
 }
 
+function createTimeoutError(label, timeoutMs) {
+  const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+  error.code = "ETIMEDOUT";
+  return error;
+}
+
+async function withTimeout(task, timeoutMs, label) {
+  let timeoutId;
+
+  try {
+    return await Promise.race([
+      Promise.resolve().then(task),
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(createTimeoutError(label, timeoutMs));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function runDashboardTask(label, task, fallbackValue) {
+  try {
+    return await withTimeout(task, DASHBOARD_DEPENDENCY_TIMEOUT_MS, label);
+  } catch (error) {
+    console.error(`[store dashboard] ${label} failed:`, error.message || error);
+    return fallbackValue;
+  }
+}
+
+async function runTasksWithConcurrency(taskFactories, concurrency) {
+  const results = new Array(taskFactories.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (nextIndex < taskFactories.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await taskFactories[currentIndex]();
+    }
+  };
+
+  const workerCount = Math.min(concurrency, taskFactories.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Feedback endpoint returned HTTP ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw createTimeoutError("Google Forms feedback fetch", timeoutMs);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function normalizeFeedbackRows(json) {
+  if (!json || !json.success || !Array.isArray(json.data) || json.data.length <= 1) {
+    return [];
+  }
+
+  const headers = json.data[0];
+  const dataRows = json.data.slice(1).map((row) => {
+    const obj = {};
+    headers.forEach((header, index) => {
+      obj[header] = row[index];
+    });
+    return obj;
+  });
+
+  return dataRows
+    .filter(
+      (feedback) =>
+        feedback.Timestamp && String(feedback.Timestamp).trim() !== ""
+    )
+    .sort(
+      (a, b) => new Date(b.Timestamp).getTime() - new Date(a.Timestamp).getTime()
+    );
+}
+
+async function fetchVendorFeedbacks() {
+  const endpoint = String(process.env.GOOGLE_FEEDBACK_STORE || "").trim();
+  if (!endpoint) {
+    return [];
+  }
+
+  for (let attempt = 1; attempt <= GOOGLE_FEEDBACK_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const url = new URL(endpoint);
+      if (attempt > 1) {
+        url.searchParams.set("_t", Date.now().toString());
+      }
+
+      const json = await fetchJsonWithTimeout(
+        url.toString(),
+        GOOGLE_FEEDBACK_TIMEOUT_MS
+      );
+
+      return normalizeFeedbackRows(json);
+    } catch (error) {
+      console.warn(
+        `[store dashboard] feedback fetch attempt ${attempt}/${GOOGLE_FEEDBACK_MAX_ATTEMPTS} failed:`,
+        error.message || error
+      );
+    }
+  }
+
+  return [];
+}
+
 async function buildDashboardPayload() {
-  const googleFetchPromise = process.env.GOOGLE_FEEDBACK_STORE
-    ? fetch(process.env.GOOGLE_FEEDBACK_STORE)
-        .then((res) => res.json())
-        .catch((err) => {
-          console.error("Failed to fetch Google Forms feedback:", err.message || err);
-          return null;
-        })
-    : Promise.resolve(null);
+  const currentMonthStartDate = getCurrentMonthStartDate();
+  const googleFetchPromise = fetchVendorFeedbacks();
 
   // Attach error handlers immediately so a PostgreSQL timeout cannot surface
   // as a detached rejection while Oracle fetches are still in progress.
@@ -119,30 +304,61 @@ async function buildDashboardPayload() {
     ),
   ]);
 
-  // Keep Oracle work sequential to avoid exhausting the Oracle pool.
   const oracleFetchers = [
-    () => storeIndentService.getDashboardMetrics(),
-    () => storeIndentService.getPending(),
-    () => storeIndentService.getHistory(),
-    () => poService.getPoPending(),
-    () => poService.getPoHistory(),
-    () => repairGatePassService.getPendingRepairGatePass(),
-    () => repairGatePassService.getReceivedRepairGatePass(),
-    () => returnableService.getReturnableDetails(),
+    () =>
+      runDashboardTask(
+        "Oracle indent summary",
+        () => storeIndentService.getDashboardMetrics(),
+        {}
+      ),
+    () =>
+      runDashboardTask(
+        "Oracle pending indents",
+        () => storeIndentService.getPending(currentMonthStartDate),
+        []
+      ),
+    () =>
+      runDashboardTask(
+        "Oracle history indents",
+        () => storeIndentService.getHistory(currentMonthStartDate),
+        []
+      ),
+    () =>
+      runDashboardTask(
+        "Oracle pending PO",
+        () => poService.getPoPending(currentMonthStartDate),
+        { rows: [], total: 0 }
+      ),
+    () =>
+      runDashboardTask(
+        "Oracle PO history",
+        () => poService.getPoHistory(currentMonthStartDate),
+        { rows: [], total: 0 }
+      ),
+    () =>
+      runDashboardTask(
+        "Oracle pending repair gate pass",
+        () => repairGatePassService.getPendingRepairGatePass(currentMonthStartDate),
+        []
+      ),
+    () =>
+      runDashboardTask(
+        "Oracle repair gate pass history",
+        () => repairGatePassService.getReceivedRepairGatePass(currentMonthStartDate),
+        []
+      ),
+    () =>
+      runDashboardTask(
+        "Oracle returnable details",
+        () => returnableService.getReturnableDetails(currentMonthStartDate),
+        []
+      ),
   ];
 
-  const oracleData = [];
-  for (const fetchFn of oracleFetchers) {
-    try {
-      oracleData.push(await fetchFn());
-    } catch (error) {
-      console.error(
-        "Oracle fetch error in dashboard background sync:",
-        error.message || error
-      );
-      oracleData.push(null);
-    }
-  }
+  const oracleData = await runTasksWithConcurrency(
+    oracleFetchers,
+    DASHBOARD_ORACLE_CONCURRENCY
+  );
 
   const [
     tasksResult,
@@ -163,31 +379,49 @@ async function buildDashboardPayload() {
     returnableDetails,
   ] = oracleData;
 
-  let vendorFeedbacks = [];
-  try {
-    const json = await googleFetchPromise;
-    if (json && json.success && json.data && json.data.length > 1) {
-      const headers = json.data[0];
-      const dataRows = json.data.slice(1).map((row) => {
-        const obj = {};
-        headers.forEach((header, index) => {
-          obj[header] = row[index];
-        });
-        return obj;
-      });
+  const currentMonthPendingIndents = filterRowsFromCurrentMonth(
+    pendingIndents,
+    ["INDENT_DATE", "indent_date", "PLANNEDTIMESTAMP", "plannedtimestamp"]
+  );
+  const currentMonthHistoryIndents = filterRowsFromCurrentMonth(
+    historyIndents,
+    [
+      "ACKNOWLEDGEDATE",
+      "acknowledgedate",
+      "INDENT_DATE",
+      "indent_date",
+      "PLANNEDTIMESTAMP",
+      "plannedtimestamp",
+    ]
+  );
+  const currentMonthPoPending = filterRowsFromCurrentMonth(poPendingData?.rows, [
+    "VRDATE",
+    "vrdate",
+    "PLANNED_TIMESTAMP",
+    "planned_timestamp",
+  ]);
+  const currentMonthPoHistory = filterRowsFromCurrentMonth(poHistoryData?.rows, [
+    "VRDATE",
+    "vrdate",
+    "PLANNED_TIMESTAMP",
+    "planned_timestamp",
+  ]);
+  const currentMonthRepairPending = filterRowsFromCurrentMonth(repairPending, [
+    "VRDATE",
+    "vrdate",
+  ]);
+  const currentMonthRepairHistory = filterRowsFromCurrentMonth(repairHistory, [
+    "RECEIVED_DATE",
+    "received_date",
+    "VRDATE",
+    "vrdate",
+  ]);
+  const currentMonthReturnableDetails = filterRowsFromCurrentMonth(
+    returnableDetails,
+    ["VRDATE", "vrdate"]
+  );
 
-      vendorFeedbacks = dataRows.filter(
-        (feedback) =>
-          feedback.Timestamp && String(feedback.Timestamp).trim() !== ""
-      );
-
-      vendorFeedbacks.sort(
-        (a, b) => new Date(b.Timestamp).getTime() - new Date(a.Timestamp).getTime()
-      );
-    }
-  } catch (error) {
-    console.error("Failed to parse Google Forms feedback:", error.message || error);
-  }
+  const vendorFeedbacks = await googleFetchPromise;
 
   const stats = statsResult.rows?.[0] || {};
 
@@ -200,13 +434,13 @@ async function buildDashboardPayload() {
     paymentTypeDistribution: paymentResult.rows || [],
     vendorWiseCosts: vendorResult.rows || [],
     summary: indentSummary || {},
-    pendingIndents: pendingIndents || [],
-    historyIndents: historyIndents || [],
-    poPending: poPendingData?.rows || [],
-    poHistory: poHistoryData?.rows || [],
-    repairPending: repairPending || [],
-    repairHistory: repairHistory || [],
-    returnableDetails: returnableDetails || [],
+    pendingIndents: currentMonthPendingIndents,
+    historyIndents: currentMonthHistoryIndents,
+    poPending: currentMonthPoPending,
+    poHistory: currentMonthPoHistory,
+    repairPending: currentMonthRepairPending,
+    repairHistory: currentMonthRepairHistory,
+    returnableDetails: currentMonthReturnableDetails,
     feedbacks: vendorFeedbacks,
   };
 }
