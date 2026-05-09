@@ -142,6 +142,59 @@ const fetchDeviceLogs = async (fromDate, toDate) => {
   return results.flatMap((result) => result.value);
 };
 
+const markAllOpenTasksAsNotDone = async (targetDate, submissionTime) => {
+  const checklistResult = await pool.query(
+    `
+      UPDATE checklist
+      SET
+        status = 'no',
+        user_status_checklist = 'No',
+        submission_date = $2
+      WHERE task_start_date::date = $1::date
+        AND submission_date IS NULL
+        AND status IS NULL
+    `,
+    [targetDate, submissionTime]
+  );
+
+  const maintenanceResult = await maintenancePool.query(
+    `
+      UPDATE maintenance_task_assign
+      SET
+        task_status = 'No',
+        actual_date = $2
+      WHERE task_start_date::date = $1::date
+        AND actual_date IS NULL
+        AND task_status IS NULL
+    `,
+    [targetDate, submissionTime]
+  );
+
+  const housekeepingResult = await housekeepingPool.query(
+    `
+      UPDATE assign_task
+      SET
+        status = 'no',
+        attachment = 'confirmed',
+        submission_date = $2,
+        delay = EXTRACT(DAY FROM ($2 - task_start_date))
+      WHERE task_start_date::date = $1::date
+        AND submission_date IS NULL
+    `,
+    [targetDate, submissionTime]
+  );
+
+  logSync(
+    `BLANKET SYNC: Updated for date ${targetDate} | Checklist: ${checklistResult.rowCount} | Maintenance: ${maintenanceResult.rowCount} | Housekeeping: ${housekeepingResult.rowCount}`
+  );
+
+  return {
+    checklistUpdated: checklistResult.rowCount,
+    maintenanceUpdated: maintenanceResult.rowCount,
+    housekeepingUpdated: housekeepingResult.rowCount,
+  };
+};
+
 const batchMarkTasksAsNotDone = async (employeeIds, targetDate, submissionTime) => {
   if (!employeeIds?.length) return { checklistUpdated: 0, maintenanceUpdated: 0, housekeepingUpdated: 0 };
 
@@ -262,6 +315,8 @@ export const markAllOverdueTasksAsNotDone = async (dateStr = null) => {
   const submissionTime = new Date(); // Current system time for completion timestamp
 
   try {
+    return await markAllOpenTasksAsNotDone(yesterdayStr, submissionTime);
+
     // 1. Update Checklist (Target Specific Date)
     const checklistResult = await pool.query(
       `
@@ -339,22 +394,18 @@ const processLogs = async (allLogs, today, startHour) => {
   let modeName = "";
 
   if (startHour === 11) {
-    // === Condition: Evening Shift Yesterday (6 PM - 10 PM) ===
-    // "if got the IN punches between evening 6 pm to 10 pm then set their pending tasks not done at next day morning 11 am."
+    // 11 AM run closes all yesterday tasks that are still open.
+    // Device IN/OUT no longer gates this branch.
     targetDate = yesterday;
-    modeName = "11 AM Trigger (Yesterday Evening Shift)";
+    modeName = "11 AM Trigger (Blanket Yesterday Open Tasks)";
 
-    for (const [emp, punches] of empActivity.entries()) {
-      for (const p of punches) {
-        if (p.dateStr === yesterday) {
-          // Check 6 PM (18:00) to 10 PM (22:00)
-          if (p.hour >= 18 && p.hour <= 22) {
-            usersToUpdate.add(emp);
-            break;
-          }
-        }
-      }
-    }
+    const result = await markAllOpenTasksAsNotDone(targetDate, submissionTime);
+
+    return {
+      mode: modeName,
+      activeUsers: 0,
+      updated: result
+    };
   } else if (startHour === 23) {
     // === 11 PM Trigger (Today) ===
     targetDate = today;
@@ -419,6 +470,12 @@ export const refreshDeviceSync = async (today = formatDateString(new Date()), fo
 
   inFlight = (async () => {
     try {
+      if (currentHour === 11) {
+        const result = await processLogs([], today, currentHour);
+        lastSyncAt = Date.now();
+        return result;
+      }
+
       const yesterday = getAdjacentDate(today, -1);
       const allLogs = await fetchDeviceLogs(yesterday, today);
 
