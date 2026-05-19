@@ -81,12 +81,15 @@ const resolveDepartment = (req) => {
   const pageAccessRaw = req.headers['x-page-access'] || '';
   const pageAccess = decodeHeader(pageAccessRaw);
   const canVerifyHousekeeping = pageAccess.includes('housekeeping-verify');
+  const isVerifyScopeRequest = req.query?.unconfirmed === 'true';
 
-  // If user has housekeeping-verify permission, bypass department filter (return null)
-  if (canVerifyHousekeeping) {
+  // Only bypass department filter for explicit verification-scope requests.
+  // Generic pending/history/all-task views should still respect the user's
+  // department access even if they can verify housekeeping tasks.
+  if (canVerifyHousekeeping && isVerifyScopeRequest) {
     logger.info({
-      note: 'User has housekeeping-verify permission - bypassing department filter to show ALL data'
-    }, 'resolveDepartment - Housekeeping Verify Permission');
+      note: 'User has housekeeping-verify permission on verification scope - bypassing department filter to show ALL data'
+    }, 'resolveDepartment - Housekeeping Verify Scope');
     return null;
   }
 
