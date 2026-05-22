@@ -3,7 +3,7 @@
 import pg from 'pg';
 import dotenv from 'dotenv';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 // Only initialize if PostgreSQL env vars are provided
 const poolHost = process.env.PG_HOST;

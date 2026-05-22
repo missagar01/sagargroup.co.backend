@@ -3,7 +3,7 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const routes = require("./routes/index.js");
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const app = express();
 app.use(express.json());

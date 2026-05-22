@@ -5,7 +5,7 @@ import oracledb, {
   isStoreOracleEnabled,
 } from "./oracleClient.js";
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const require = createRequire(import.meta.url);
 const {

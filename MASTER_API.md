@@ -40,7 +40,7 @@ Generated on: 2026-03-28T00:00:00.000Z
 ## Runtime Notes
 - `401` = token missing/invalid.
 - `500` DB connect error = route loaded, but DB/tunnel/network issue.
-- Quick mount check: `/api/store/health`, `/api/document/health`, `/api/master/health`, `/api/hrfms/health`, `/api/gatepass/health`, `/api/checklist/health`, `/api/project/health`.
+- Quick mount check: `/api/store/health`, `/api/document/health`, `/api/master/health`, `/api/hrfms/health`, `/api/gatepass/health`, `/api/checklist/health`, `/api/project/health`, `/api/iot`.
 - `Checklist/Mainatce/Houskeeping` routes are JWT-protected. Use `Authorization: Bearer <TOKEN>` from login for every request.
 
 ## Shared Auth APIs (3)
@@ -351,6 +351,19 @@ Note: Same endpoints are also available via `/api/maintenance/...` alias. Token 
 | GET | `/api/o2d/size-master/enquiries/all` |
 | POST | `/api/o2d/size-master/enquiry` |
 | GET | `/api/o2d/size-master/report/current-month` |
+
+## IoT APIs (6)
+
+Note: IoT APIs are served from the main backend on the same base URL. Real-time MQTT updates are published over Socket.IO from the same server.
+
+| Method | Endpoint |
+|---|---|
+| GET | `/api/iot` |
+| GET | `/api/iot/status` |
+| GET | `/api/iot/messages` |
+| POST | `/api/iot/config` |
+| POST | `/api/iot/publish` |
+| POST | `/api/iot/clear-history` |
 
 ## Batchcode APIs (16)
 

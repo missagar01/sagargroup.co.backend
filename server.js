@@ -1,8 +1,11 @@
+const http = require("http");
 const path = require("path");
 const dotenv = require("dotenv");
+const { Server: SocketIOServer } = require("socket.io");
 
 dotenv.config({
   path: path.join(__dirname, ".env"),
+  quiet: true,
 });
 
 // Safely try to load Oracle config
@@ -20,6 +23,11 @@ const { getPgPool, closePgPool, resetPool } = require("./config/pg.js");
 const { connectDatabase, connectAuthDatabase } = require("./config/database.js");
 const { initSSHTunnel, closeSSHTunnel } = require("./config/sshTunnel.js");
 const redisClient = require("./config/redis.js");
+const {
+  getSocketCorsOptions,
+  initializeIotModule,
+  shutdownIotModule,
+} = require("./src/iot");
 
 const port = Number(process.env.PORT || 3004); // Server Port
 const DEPLOY_MODE = process.env.DEPLOY_MODE === "true";
@@ -107,7 +115,8 @@ async function closeDatabases() {
       closeStorePoolPromise,
       closePgPool(),
       closeSSHTunnel(),
-      redisClient.quit()
+      redisClient.quit(),
+      shutdownIotModule(),
     ]);
   } catch (err) {
     console.error("⚠️ Error closing database connections:", err);
@@ -203,7 +212,22 @@ console.log("DEPLOY_MODE:", DEPLOY_MODE);
 console.log("DEVICE_SYNC_ENABLED:", DEVICE_SYNC_ENABLED);
 console.log("DEVICE_SYNC_INTERVAL_MS:", DEVICE_SYNC_INTERVAL_MS);
 
-const server = app.listen(port, async () => {
+const httpServer = http.createServer(app);
+const io = new SocketIOServer(httpServer, {
+  cors: getSocketCorsOptions(),
+});
+
+httpServer.on("error", (error) => {
+  if (error?.code === "EADDRINUSE") {
+    console.error(`Port ${port} is already in use. Stop the existing process or change PORT in backend/.env.`);
+    process.exit(1);
+  }
+
+  console.error("HTTP server failed to start:", error);
+  process.exit(1);
+});
+
+const server = httpServer.listen(port, async () => {
   try {
     // Initialize SSH tunnel first (if SSH_HOST is configured)
     // Make it optional - don't fail server startup if SSH is unavailable
@@ -292,6 +316,8 @@ const server = app.listen(port, async () => {
     } catch (storePgErr) {
       console.warn("âš ï¸ Store PostgreSQL schema initialization failed:", storePgErr.message);
     }
+
+    await initializeIotModule(io);
 
     if (process.env.REDIS_URL) {
       console.log("📡 Redis initialized (background connection)...");

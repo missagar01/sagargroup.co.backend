@@ -4,7 +4,7 @@ const { S3Client } = require("@aws-sdk/client-s3");
 const { Upload } = require("@aws-sdk/lib-storage");
 const dotenv = require("dotenv");
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 // 1️⃣ Initialize S3 client (AWS SDK v3)
 const s3 = new S3Client({
