@@ -13,17 +13,17 @@ class MqttGatewayService {
     this.messageHistory = [];
     this.mqttConfig = {
       brokerUrl: '',
-      topics: ['#'],
+      topics: ['sagarpipe'],
       username: '',
       password: '',
     };
   }
 
-  initialize({ io, brokerUrl, username, password }) {
+  initialize({ io, brokerUrl, username, password, topics }) {
     this.io = io;
     this.mqttConfig = {
       brokerUrl,
-      topics: ['#'],
+      topics: (Array.isArray(topics) && topics.length > 0) ? topics : ['sagarpipe'],
       username,
       password,
     };

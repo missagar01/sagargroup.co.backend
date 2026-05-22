@@ -35,6 +35,7 @@ const initializeIotModule = async (io) => {
     brokerUrl: env.mqttBrokerUrl,
     username: env.mqttUsername,
     password: env.mqttPassword,
+    topics: env.mqttTopics,
   });
 
   registerSocketHandlers(io);

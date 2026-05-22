@@ -429,6 +429,41 @@ const buildAlertSummary = (records) => {
           severity: Math.abs(record.avgVoltage - voltageAverage) > 12 ? 'Critical' : 'Warning',
         });
       }
+
+      // High Voltage / Low Voltage
+      if (isNumber(record.avgVoltage)) {
+        if (record.avgVoltage > 250) {
+          pushAlert({
+            type: 'High Voltage',
+            title: 'High Voltage Detected',
+            machine,
+            time,
+            value: formatAlertValue(record.avgVoltage, 'V', 1),
+            severity: record.avgVoltage > 265 ? 'Critical' : 'Warning',
+          });
+        } else if (record.avgVoltage < 215) {
+          pushAlert({
+            type: 'Low Voltage',
+            title: 'Low Voltage Detected',
+            machine,
+            time,
+            value: formatAlertValue(record.avgVoltage, 'V', 1),
+            severity: record.avgVoltage < 200 ? 'Critical' : 'Warning',
+          });
+        }
+      }
+
+      // High Current
+      if (isNumber(record.avgCurrent) && record.avgCurrent > 12) {
+        pushAlert({
+          type: 'High Current',
+          title: 'High Current Draw',
+          machine,
+          time,
+          value: formatAlertValue(record.avgCurrent, 'A', 2),
+          severity: record.avgCurrent > 20 ? 'Critical' : 'Warning',
+        });
+      }
     });
 
   return { total, items };
@@ -450,9 +485,10 @@ const buildAggregate = (records, mode, rangeStart, rangeEnd) => {
   const deviceCount = latestDeviceStates.length;
   const totalExpectedSlots = expectedSlotsPerDevice * Math.max(deviceCount, 1);
   const runningSlots = records.filter((record) => record.isRunning).length;
+  const stoppedSlots = records.filter((record) => !record.isRunning).length;
   const runningTimeSeconds = runningSlots * SLOT_SECONDS;
+  const stoppedTimeSeconds = stoppedSlots * SLOT_SECONDS;
   const totalDurationSeconds = totalExpectedSlots * SLOT_SECONDS;
-  const stoppedTimeSeconds = Math.max(totalDurationSeconds - runningTimeSeconds, 0);
   const uptimePct = totalDurationSeconds > 0 ? (runningTimeSeconds / totalDurationSeconds) * 100 : 0;
   const alertSummary = buildAlertSummary(records);
   const lastSummaryTime = records.length > 0 ? records[records.length - 1].timestamp.toISOString() : null;

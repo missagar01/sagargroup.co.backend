@@ -272,26 +272,11 @@ class PostgresPersistenceService {
       return [];
     }
 
-    // Try to fetch records that actually have non-zero active telemetry values
-    let result = await this.pool.query(
-      `
-        SELECT
-          id,
-          topic,
-          broker_url,
-          message_timestamp,
-          ${STRUCTURED_COLUMN_DEFINITIONS.map(({ column }) => column).join(',\n          ')},
-          created_at
-        FROM ${TABLE_NAME}
-        WHERE v_r > 100 OR v_y > 100 OR v_b > 100 OR i_r > 0 OR i_y > 0 OR i_b > 0 OR kw_t > 0
-        ORDER BY id DESC
-        LIMIT $1
-      `,
-      [limit]
-    );
+    const envTopics = (process.env.MQTT_TOPICS || 'sagarpipe').split(',').map(t => t.trim()).filter(Boolean);
+    const hasWildcard = envTopics.includes('#');
 
-    // Fall back to returning any latest records if no active/non-zero records are found
-    if (result.rows.length === 0) {
+    let result;
+    if (hasWildcard) {
       result = await this.pool.query(
         `
           SELECT
@@ -299,14 +284,70 @@ class PostgresPersistenceService {
             topic,
             broker_url,
             message_timestamp,
-            ${STRUCTURED_COLUMN_DEFINITIONS.map(({ column }) => column).join(',\n          ')},
+            ${STRUCTURED_COLUMN_DEFINITIONS.map(({ column }) => column).join(',\n            ')},
             created_at
           FROM ${TABLE_NAME}
+          WHERE v_r > 100 OR v_y > 100 OR v_b > 100 OR i_r > 0 OR i_y > 0 OR i_b > 0 OR kw_t > 0
           ORDER BY id DESC
           LIMIT $1
         `,
         [limit]
       );
+
+      if (result.rows.length === 0) {
+        result = await this.pool.query(
+          `
+            SELECT
+              id,
+              topic,
+              broker_url,
+              message_timestamp,
+              ${STRUCTURED_COLUMN_DEFINITIONS.map(({ column }) => column).join(',\n              ')},
+              created_at
+            FROM ${TABLE_NAME}
+            ORDER BY id DESC
+            LIMIT $1
+          `,
+          [limit]
+        );
+      }
+    } else {
+      result = await this.pool.query(
+        `
+          SELECT
+            id,
+            topic,
+            broker_url,
+            message_timestamp,
+            ${STRUCTURED_COLUMN_DEFINITIONS.map(({ column }) => column).join(',\n            ')},
+            created_at
+          FROM ${TABLE_NAME}
+          WHERE (v_r > 100 OR v_y > 100 OR v_b > 100 OR i_r > 0 OR i_y > 0 OR i_b > 0 OR kw_t > 0)
+            AND topic = ANY($2::text[])
+          ORDER BY id DESC
+          LIMIT $1
+        `,
+        [limit, envTopics]
+      );
+
+      if (result.rows.length === 0) {
+        result = await this.pool.query(
+          `
+            SELECT
+              id,
+              topic,
+              broker_url,
+              message_timestamp,
+              ${STRUCTURED_COLUMN_DEFINITIONS.map(({ column }) => column).join(',\n              ')},
+              created_at
+            FROM ${TABLE_NAME}
+            WHERE topic = ANY($2::text[])
+            ORDER BY id DESC
+            LIMIT $1
+          `,
+          [limit, envTopics]
+        );
+      }
     }
 
     return result.rows.map((row) => ({
@@ -319,23 +360,48 @@ class PostgresPersistenceService {
       return [];
     }
 
-    const result = await this.pool.query(
-      `
-        SELECT
-          id,
-          topic,
-          broker_url,
-          message_timestamp,
-          ${STRUCTURED_COLUMN_DEFINITIONS.map(({ column }) => column).join(',\n          ')},
-          created_at
-        FROM ${TABLE_NAME}
-        WHERE EXTRACT(MINUTE FROM message_timestamp) IN (0, 30)
-          AND EXTRACT(SECOND FROM message_timestamp) = 0
-        ORDER BY message_timestamp DESC, id DESC
-        LIMIT $1
-      `,
-      [limit]
-    );
+    const envTopics = (process.env.MQTT_TOPICS || 'sagarpipe').split(',').map(t => t.trim()).filter(Boolean);
+    const hasWildcard = envTopics.includes('#');
+
+    let result;
+    if (hasWildcard) {
+      result = await this.pool.query(
+        `
+          SELECT
+            id,
+            topic,
+            broker_url,
+            message_timestamp,
+            ${STRUCTURED_COLUMN_DEFINITIONS.map(({ column }) => column).join(',\n            ')},
+            created_at
+          FROM ${TABLE_NAME}
+          WHERE EXTRACT(MINUTE FROM message_timestamp) IN (0, 30)
+            AND EXTRACT(SECOND FROM message_timestamp) = 0
+          ORDER BY message_timestamp DESC, id DESC
+          LIMIT $1
+        `,
+        [limit]
+      );
+    } else {
+      result = await this.pool.query(
+        `
+          SELECT
+            id,
+            topic,
+            broker_url,
+            message_timestamp,
+            ${STRUCTURED_COLUMN_DEFINITIONS.map(({ column }) => column).join(',\n            ')},
+            created_at
+          FROM ${TABLE_NAME}
+          WHERE EXTRACT(MINUTE FROM message_timestamp) IN (0, 30)
+            AND EXTRACT(SECOND FROM message_timestamp) = 0
+            AND topic = ANY($2::text[])
+          ORDER BY message_timestamp DESC, id DESC
+          LIMIT $1
+        `,
+        [limit, envTopics]
+      );
+    }
 
     return result.rows.reverse().map((row) => this.normalizeStoredMessage(row));
   }
