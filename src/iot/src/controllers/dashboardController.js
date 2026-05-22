@@ -13,22 +13,61 @@ const getMessages = async (req, res, next) => {
       throw error;
     }
 
-    // 1. Get live raw messages from memory and normalize them
-    const rawLive = mqttGatewayService.getMessages() || [];
-    const normalizedLive = rawLive.map(m =>
-      postgresPersistenceService.normalizeLiveMessage(m, mqttGatewayService.mqttConfig.brokerUrl)
-    );
-
-    // 2. Get 30-minute summary rows from the database
     const persistedMessages = await postgresPersistenceService.getMessages();
-
-    // 3. Combine both streams (live memory first, then database history)
-    const mergedMessages = [...normalizedLive, ...persistedMessages];
-
-    res.json(mergedMessages);
+    res.json(persistedMessages);
   } catch (error) {
     next(error);
   }
+};
+
+const getSummary = async (req, res, next) => {
+  try {
+    if (!postgresPersistenceService.isReady()) {
+      const error = new Error('PostgreSQL database is not ready');
+      error.statusCode = 503;
+      throw error;
+    }
+
+    const summary = await postgresPersistenceService.getDashboardSummary();
+    res.json(summary);
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getLive = (req, res) => {
+  const rawLive = mqttGatewayService.getMessages() || [];
+  const latestByDevice = new Map();
+
+  rawLive.forEach((message) => {
+    const normalized = postgresPersistenceService.normalizeLiveMessage(
+      message,
+      mqttGatewayService.mqttConfig.brokerUrl
+    );
+    const deviceKey = normalized.deviceUid || normalized.topic || 'Energy';
+    const phaseCurrents = [normalized.iR, normalized.iY, normalized.iB]
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value));
+    const currentMax = phaseCurrents.length > 0 ? Math.max(...phaseCurrents) : 0;
+    const directKw = Number(normalized.kwT);
+    const isOnline = currentMax > 0 || (Number.isFinite(directKw) && directKw > 0);
+
+    if (!latestByDevice.has(deviceKey)) {
+      latestByDevice.set(deviceKey, {
+        deviceUid: normalized.deviceUid || deviceKey,
+        topic: normalized.topic,
+        messageTimestamp: normalized.messageTimestamp,
+        meterTimestamp: normalized.meterTimestamp ?? null,
+        isOnline,
+      });
+    }
+  });
+
+  res.json({
+    connection: mqttGatewayService.getStatus(),
+    devices: Array.from(latestByDevice.values()),
+    liveMessageCount: rawLive.length,
+  });
 };
 
 const updateConfig = (req, res) => {
@@ -58,6 +97,8 @@ const clearHistory = async (req, res, next) => {
 module.exports = {
   getStatus,
   getMessages,
+  getSummary,
+  getLive,
   updateConfig,
   publishMessage,
   clearHistory,

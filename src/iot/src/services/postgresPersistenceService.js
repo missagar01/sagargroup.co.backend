@@ -4,6 +4,7 @@ const {
   extractStructuredPayloadValues,
   parsePayload,
 } = require('../utils/payloadParser');
+const { buildDashboardSummary } = require('./summaryBuilder');
 
 const DEFAULT_RETRY_DELAY_MS = 10000;
 const MAX_PENDING_WRITES = 5000;
@@ -311,6 +312,37 @@ class PostgresPersistenceService {
     return result.rows.map((row) => ({
       ...this.normalizeStoredMessage(row),
     }));
+  }
+
+  async getSummaryMessages(limit = 5000) {
+    if (!this.isReady()) {
+      return [];
+    }
+
+    const result = await this.pool.query(
+      `
+        SELECT
+          id,
+          topic,
+          broker_url,
+          message_timestamp,
+          ${STRUCTURED_COLUMN_DEFINITIONS.map(({ column }) => column).join(',\n          ')},
+          created_at
+        FROM ${TABLE_NAME}
+        WHERE EXTRACT(MINUTE FROM message_timestamp) IN (0, 30)
+          AND EXTRACT(SECOND FROM message_timestamp) = 0
+        ORDER BY message_timestamp DESC, id DESC
+        LIMIT $1
+      `,
+      [limit]
+    );
+
+    return result.rows.reverse().map((row) => this.normalizeStoredMessage(row));
+  }
+
+  async getDashboardSummary(limit = 5000) {
+    const messages = await this.getSummaryMessages(limit);
+    return buildDashboardSummary(messages);
   }
 
   normalizeStoredMessage(row) {
