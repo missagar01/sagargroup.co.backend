@@ -30,9 +30,8 @@ class PostgresPersistenceService {
     this.isConnecting = false;
     this.usesSharedPool = false;
 
-    // Buffer for 30-minute aggregation
-    this.activeSlot = null; // String: e.g. "2026-05-21T12:00:00.000Z"
-    this.messageBuffer = []; // Array of message objects
+    // Partitioned buffers per device/topic to handle multi-device isolation and prevent duplicates
+    this.deviceBuffers = {}; // Map: deviceKey -> { activeSlot, messageBuffer, lastFlushedSlot }
     this.flushTimer = null;
   }
 
@@ -79,10 +78,16 @@ class PostgresPersistenceService {
   }
 
   getStatus() {
+    let pendingWrites = 0;
+    if (this.deviceBuffers) {
+      for (const deviceKey of Object.keys(this.deviceBuffers)) {
+        pendingWrites += this.deviceBuffers[deviceKey].messageBuffer.length;
+      }
+    }
     return {
       enabled: this.isEnabled(),
       status: this.status,
-      pendingWrites: this.messageBuffer.length,
+      pendingWrites,
       lastError: this.lastError,
       tableName: TABLE_NAME,
       nextRetryAt: this.nextRetryAt,
@@ -128,25 +133,48 @@ class PostgresPersistenceService {
       return;
     }
 
+    const deviceUid = structuredValues.device_uid || 'Energy';
+    const deviceKey = `${message.topic}|${deviceUid}`;
+
+    if (!this.deviceBuffers) {
+      this.deviceBuffers = {};
+    }
+
+    if (!this.deviceBuffers[deviceKey]) {
+      this.deviceBuffers[deviceKey] = {
+        activeSlot: null,
+        messageBuffer: [],
+        lastFlushedSlot: null,
+      };
+    }
+
+    const deviceBuf = this.deviceBuffers[deviceKey];
+
+    // Safeguard: Ignore messages for slots that have already been flushed to prevent duplicate rows
+    if (deviceBuf.lastFlushedSlot && slot <= deviceBuf.lastFlushedSlot) {
+      console.log(`[Aggregator] Ignored late message for already flushed slot ${slot} on ${deviceKey}`);
+      return;
+    }
+
     // Initialize first slot if not set
-    if (!this.activeSlot) {
-      this.activeSlot = slot;
-      this.messageBuffer = [];
-      console.log(`[Aggregator] Initializing first 30-min active slot: ${this.activeSlot}`);
+    if (!deviceBuf.activeSlot) {
+      deviceBuf.activeSlot = slot;
+      deviceBuf.messageBuffer = [];
+      console.log(`[Aggregator] Initializing active slot for ${deviceKey}: ${deviceBuf.activeSlot}`);
     }
 
     // If slot changed, flush previous slot and start new one
-    if (slot !== this.activeSlot) {
-      console.log(`[Aggregator] Slot boundary crossed from ${this.activeSlot} to ${slot}. Flushing buffer.`);
-      this.flushBuffer().catch((error) => {
-        console.error('[Aggregator] Buffer flush failed during slot transition:', error);
+    if (slot !== deviceBuf.activeSlot) {
+      console.log(`[Aggregator] Slot boundary crossed for ${deviceKey} from ${deviceBuf.activeSlot} to ${slot}. Flushing buffer.`);
+      this.flushDeviceBuffer(deviceKey, deviceBuf.activeSlot).catch((error) => {
+        console.error(`[Aggregator] Buffer flush failed during slot transition for ${deviceKey}:`, error);
       });
-      this.activeSlot = slot;
-      this.messageBuffer = [];
+      deviceBuf.activeSlot = slot;
+      deviceBuf.messageBuffer = [];
     }
 
     // Buffer parsed fields
-    this.messageBuffer.push({
+    deviceBuf.messageBuffer.push({
       topic: message.topic,
       broker_url: brokerUrl,
       message_timestamp: message.timestamp,
@@ -154,32 +182,53 @@ class PostgresPersistenceService {
     });
   }
 
-  async flushBuffer() {
-    if (this.messageBuffer.length === 0) {
-      console.log(`[Aggregator] Buffer is empty for slot ${this.activeSlot}, skipping database write.`);
+  async flushDeviceBuffer(deviceKey, slotToFlush) {
+    if (!this.deviceBuffers || !this.deviceBuffers[deviceKey]) {
+      return;
+    }
+
+    const deviceBuf = this.deviceBuffers[deviceKey];
+
+    if (deviceBuf.messageBuffer.length === 0) {
+      console.log(`[Aggregator] Buffer is empty for ${deviceKey} slot ${slotToFlush}, skipping database write.`);
       return;
     }
 
     if (!this.isReady()) {
-      console.warn(`[Aggregator] Database is not ready. Keeping ${this.messageBuffer.length} buffered messages in memory.`);
+      console.warn(`[Aggregator] Database is not ready. Keeping ${deviceBuf.messageBuffer.length} buffered messages in memory for ${deviceKey}.`);
       return;
     }
 
-    const slotToFlush = this.activeSlot;
-    const bufferToFlush = [...this.messageBuffer];
+    const bufferToFlush = [...deviceBuf.messageBuffer];
 
-    // Reset buffer immediately
-    this.messageBuffer = [];
-    this.activeSlot = null;
+    // Reset buffer immediately and save lastFlushedSlot synchronously to prevent race duplicate writes
+    deviceBuf.messageBuffer = [];
+    deviceBuf.lastFlushedSlot = slotToFlush;
 
-    console.log(`[Aggregator] Aggregating ${bufferToFlush.length} messages for slot ${slotToFlush}...`);
+    if (deviceBuf.activeSlot === slotToFlush) {
+      deviceBuf.activeSlot = null;
+    }
+
+    console.log(`[Aggregator] Aggregating ${bufferToFlush.length} messages for ${deviceKey} slot ${slotToFlush}...`);
 
     try {
       const aggregated = this.aggregateMessages(bufferToFlush, slotToFlush);
       await this.insertAggregatedMessage(aggregated);
-      console.log(`[Aggregator] Successfully saved 30-min summary row for slot ${slotToFlush} to database.`);
+      console.log(`[Aggregator] Successfully saved 30-min summary row for ${deviceKey} slot ${slotToFlush} to database.`);
     } catch (error) {
-      console.error(`[Aggregator] Failed to save aggregated slot ${slotToFlush}:`, error);
+      console.error(`[Aggregator] Failed to save aggregated slot ${slotToFlush} for ${deviceKey}:`, error);
+    }
+  }
+
+  // Backwards compatible fallback for flushBuffer
+  async flushBuffer() {
+    if (this.deviceBuffers) {
+      for (const deviceKey of Object.keys(this.deviceBuffers)) {
+        const deviceBuf = this.deviceBuffers[deviceKey];
+        if (deviceBuf.activeSlot) {
+          await this.flushDeviceBuffer(deviceKey, deviceBuf.activeSlot);
+        }
+      }
     }
   }
 
@@ -272,19 +321,26 @@ class PostgresPersistenceService {
   }
 
   async checkPeriodicFlush() {
-    if (!this.activeSlot || this.messageBuffer.length === 0) {
+    if (!this.deviceBuffers) {
       return;
     }
 
-    const slotStartTime = new Date(this.activeSlot).getTime();
     const currentTime = Date.now();
     const slotDurationMs = 30 * 60 * 1000;
 
-    if (currentTime - slotStartTime >= slotDurationMs) {
-      console.log(`[Aggregator] Real-world clock passed slot end time for ${this.activeSlot}. Flushing buffer via periodic timer.`);
-      this.flushBuffer().catch((error) => {
-        console.error('[Aggregator] Periodic buffer flush failed:', error);
-      });
+    for (const deviceKey of Object.keys(this.deviceBuffers)) {
+      const deviceBuf = this.deviceBuffers[deviceKey];
+      if (!deviceBuf.activeSlot || deviceBuf.messageBuffer.length === 0) {
+        continue;
+      }
+
+      const slotStartTime = new Date(deviceBuf.activeSlot).getTime();
+      if (currentTime - slotStartTime >= slotDurationMs) {
+        console.log(`[Aggregator] Real-world clock passed slot end time for ${deviceKey} (${deviceBuf.activeSlot}). Flushing buffer via periodic timer.`);
+        this.flushDeviceBuffer(deviceKey, deviceBuf.activeSlot).catch((error) => {
+          console.error(`[Aggregator] Periodic buffer flush failed for ${deviceKey}:`, error);
+        });
+      }
     }
   }
 
@@ -491,11 +547,16 @@ class PostgresPersistenceService {
     }
 
     // Flush any remaining data in the buffer on shutdown
-    if (this.activeSlot && this.messageBuffer.length > 0) {
-      try {
-        await this.flushBuffer();
-      } catch (error) {
-        console.error('Failed to flush buffer on shutdown:', error);
+    if (this.deviceBuffers) {
+      for (const deviceKey of Object.keys(this.deviceBuffers)) {
+        const deviceBuf = this.deviceBuffers[deviceKey];
+        if (deviceBuf.activeSlot && deviceBuf.messageBuffer.length > 0) {
+          try {
+            await this.flushDeviceBuffer(deviceKey, deviceBuf.activeSlot);
+          } catch (error) {
+            console.error(`Failed to flush buffer on shutdown for ${deviceKey}:`, error);
+          }
+        }
       }
     }
 
