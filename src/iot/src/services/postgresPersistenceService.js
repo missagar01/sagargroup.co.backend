@@ -10,6 +10,8 @@ const { buildDashboardSummary } = require('./summaryBuilder');
 const DEFAULT_RETRY_DELAY_MS = 10000;
 const MAX_PENDING_WRITES = 5000;
 const TABLE_NAME = 'mqtt_messages';
+const AGGREGATE_UNIQUE_INDEX_NAME = 'mqtt_messages_slot_unique_idx';
+const AGGREGATE_UNIQUE_COLUMNS = ['topic', 'device_uid', 'slave_id', 'message_timestamp'];
 const LEGACY_PAYLOAD_COLUMNS = ['raw_payload', 'payload_json'];
 const STRUCTURED_COLUMN_DEFINITIONS = [
   { column: 'device_uid', type: 'TEXT', responseKey: 'deviceUid' },
@@ -307,6 +309,12 @@ class PostgresPersistenceService {
       ...STRUCTURED_COLUMN_DEFINITIONS.map(({ column }) => aggregated[column] ?? null),
     ];
     const placeholders = insertColumns.map((_, index) => `$${index + 1}`);
+    const conflictUpdateColumns = insertColumns.filter(
+      (column) => !AGGREGATE_UNIQUE_COLUMNS.includes(column)
+    );
+    const conflictAssignments = conflictUpdateColumns.map(
+      (column) => `${column} = EXCLUDED.${column}`
+    );
 
     await this.pool.query(
       `
@@ -315,6 +323,9 @@ class PostgresPersistenceService {
         ) VALUES (
           ${placeholders.join(', ')}
         )
+        ON CONFLICT (${AGGREGATE_UNIQUE_COLUMNS.join(', ')})
+        DO UPDATE SET
+          ${conflictAssignments.join(', ')}
       `,
       insertValues
     );
@@ -581,6 +592,7 @@ class PostgresPersistenceService {
       await this.ensureSchema();
       await this.backfillLegacyPayloadColumns();
       await this.dropLegacyPayloadColumns();
+      await this.ensureAggregatedUniqueness();
       this.status = 'ready';
       this.lastError = null;
       this.retryAttempt = 0;
@@ -674,6 +686,39 @@ class PostgresPersistenceService {
     for (const { column, type } of METER_FIELD_DEFINITIONS) {
       await this.pool.query(`ALTER TABLE ${TABLE_NAME} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
     }
+  }
+
+  async ensureAggregatedUniqueness() {
+    const existingColumns = await this.getExistingColumns(AGGREGATE_UNIQUE_COLUMNS);
+
+    if (existingColumns.length !== AGGREGATE_UNIQUE_COLUMNS.length) {
+      return;
+    }
+
+    const dedupeResult = await this.pool.query(
+      `
+        DELETE FROM ${TABLE_NAME} duplicate_row
+        USING ${TABLE_NAME} survivor_row
+        WHERE duplicate_row.id < survivor_row.id
+          AND duplicate_row.topic = survivor_row.topic
+          AND duplicate_row.device_uid = survivor_row.device_uid
+          AND duplicate_row.slave_id = survivor_row.slave_id
+          AND duplicate_row.message_timestamp = survivor_row.message_timestamp
+      `
+    );
+
+    if (dedupeResult.rowCount > 0) {
+      console.warn(
+        `[PostgreSQL] Removed ${dedupeResult.rowCount} duplicate aggregated row(s) before enforcing slot uniqueness.`
+      );
+    }
+
+    await this.pool.query(
+      `
+        CREATE UNIQUE INDEX IF NOT EXISTS ${AGGREGATE_UNIQUE_INDEX_NAME}
+        ON ${TABLE_NAME} (${AGGREGATE_UNIQUE_COLUMNS.join(', ')})
+      `
+    );
   }
 
   async getExistingColumns(columnNames) {
