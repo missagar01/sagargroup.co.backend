@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+const { getPgPool } = require('../../../../config/pg');
 const {
   METER_FIELD_DEFINITIONS,
   extractStructuredPayloadValues,
@@ -27,6 +28,7 @@ class PostgresPersistenceService {
     this.retryAttempt = 0;
     this.nextRetryAt = null;
     this.isConnecting = false;
+    this.usesSharedPool = false;
 
     // Buffer for 30-minute aggregation
     this.activeSlot = null; // String: e.g. "2026-05-21T12:00:00.000Z"
@@ -54,7 +56,26 @@ class PostgresPersistenceService {
   }
 
   isEnabled() {
+    if (this.shouldUseSharedPool()) {
+      return true;
+    }
+
     return Boolean(this.config?.host && this.config?.user && this.config?.database && this.config?.port);
+  }
+
+  hasSharedPoolConfig() {
+    return Boolean(
+      process.env.DATABASE_URL ||
+      (
+        (process.env.DB_HOST || process.env.PG_HOST) &&
+        (process.env.DB_USER || process.env.PG_USER) &&
+        (process.env.DB_NAME || process.env.PG_DATABASE || process.env.PG_NAME)
+      )
+    );
+  }
+
+  shouldUseSharedPool() {
+    return Boolean(this.config?.useSharedPool) && this.hasSharedPoolConfig();
   }
 
   getStatus() {
@@ -537,12 +558,27 @@ class PostgresPersistenceService {
       return;
     }
 
+    if (this.shouldUseSharedPool()) {
+      this.usesSharedPool = true;
+      this.pool = getPgPool();
+      await this.pool.query('SELECT 1');
+      console.log('PostgreSQL persistence is using the shared backend pool.');
+      return;
+    }
+
+    const useSsl =
+      typeof this.config?.ssl === 'boolean'
+        ? this.config.ssl
+        : String(this.config?.host || '').includes('rds.amazonaws.com');
+
+    this.usesSharedPool = false;
     this.pool = new Pool({
       host: this.config.host,
       port: this.config.port,
       user: this.config.user,
       password: this.config.password,
       database: this.config.database,
+      ssl: useSsl ? { rejectUnauthorized: false } : false,
       max: 5,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 10000,
@@ -722,7 +758,13 @@ class PostgresPersistenceService {
     }
 
     const currentPool = this.pool;
+    const usesSharedPool = this.usesSharedPool;
     this.pool = null;
+    this.usesSharedPool = false;
+
+    if (usesSharedPool) {
+      return;
+    }
 
     try {
       await currentPool.end();

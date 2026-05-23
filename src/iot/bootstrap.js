@@ -27,6 +27,8 @@ const initializeIotModule = async (io) => {
     user: env.dbUser,
     password: env.dbPassword,
     database: env.dbName,
+    ssl: env.dbSsl,
+    useSharedPool: env.dbUseSharedPool,
     retryDelayMs: env.dbRetryDelayMs,
   });
 
