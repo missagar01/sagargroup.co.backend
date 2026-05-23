@@ -63,18 +63,24 @@ const cleanCurrent = (value) => {
 
 const cleanPF = (value) => {
   const numeric = safeNumber(value);
-  if (!isNumber(numeric) || numeric <= 0 || numeric === -1) {
+  if (!isNumber(numeric)) {
     return null;
   }
 
   let pf = numeric;
-  if (pf > 100) {
+  const absPf = Math.abs(pf);
+  if (absPf > 100) {
     pf = pf / 1000;
-  } else if (pf > 1) {
+  } else if (absPf > 1) {
     pf = pf / 100;
   }
 
-  if (pf < 0.3 || pf > 1) {
+  if (pf === 0 || pf === -1) {
+    return pf;
+  }
+
+  const normalizedAbs = Math.abs(pf);
+  if (normalizedAbs < 0.3 || normalizedAbs > 1) {
     return null;
   }
 
