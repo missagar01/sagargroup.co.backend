@@ -212,7 +212,7 @@ console.log("DEPLOY_MODE:", DEPLOY_MODE);
 console.log("DEVICE_SYNC_ENABLED:", DEVICE_SYNC_ENABLED);
 console.log("DEVICE_SYNC_INTERVAL_MS:", DEVICE_SYNC_INTERVAL_MS);
 
-const httpServer = http.createServer(app);
+const httpServer = http.createServer(app); 
 const io = new SocketIOServer(httpServer, {
   cors: getSocketCorsOptions(),
 });

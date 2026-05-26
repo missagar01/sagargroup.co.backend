@@ -21,18 +21,24 @@ const pendingIndentDownloadColumns = [
 ];
 
 const historyIndentDownloadColumns = [
-  { header: "Indent No", key: "INDENT_NO", width: 16 },
+  { header: "Planned Timestamp", key: "PLANNEDTIMESTAMP", width: 22 },
+  { header: "Indent No", key: "INDENT_NUMBER", width: 16 },
   { header: "Indent Date", key: "INDENT_DATE", width: 14 },
-  { header: "Indenter", key: "INDENTER", width: 20 },
+  { header: "Indenter", key: "INDENTER_NAME", width: 20 },
   { header: "Division", key: "DIVISION", width: 18 },
   { header: "Department", key: "DEPARTMENT", width: 18 },
   { header: "Item Code", key: "ITEM_CODE", width: 15 },
   { header: "Item Name", key: "ITEM_NAME", width: 28 },
-  { header: "Qty Indent", key: "QTYINDENT", width: 15 },
+  { header: "Qty Indent", key: "REQUIRED_QTY", width: 15 },
   { header: "UOM", key: "UM", width: 10 },
   { header: "Acknowledge Date", key: "ACKNOWLEDGEDATE", width: 20 },
   { header: "Purchaser", key: "PURCHASER", width: 20 },
-  { header: "PO Number", key: "PO_NUMBER", width: 25 },
+  { header: "Purpose Remark", key: "REMARK", width: 28 },
+  { header: "Specification", key: "SPECIFICATION", width: 28 },
+  { header: "Cost Project", key: "COST_PROJECT", width: 20 },
+  { header: "Cancelled Date", key: "CANCELLEDDATE", width: 22 },
+  { header: "Cancelled Remark", key: "CANCELLED_REMARK", width: 28 },
+  { header: "PO Number", key: "PO_NO", width: 25 },
   { header: "GRN No", key: "GRN_NO", width: 25 },
   { header: "GRN Date", key: "GRN_DATE", width: 25 },
 ];
