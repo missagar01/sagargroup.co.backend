@@ -25,7 +25,7 @@ const GOOGLE_FEEDBACK_MAX_ATTEMPTS = Math.max(
 );
 const DASHBOARD_ORACLE_START_SQL = "TRUNC(SYSDATE, 'MM')";
 const DASHBOARD_RETURNABLE_START_SQL = "TRUNC(SYSDATE, 'MM')";
-const ORACLE_EXECUTE_OPTIONS = { outFormat: oracledb.OUT_FORMAT_OBJECT };
+const ORACLE_EXECUTE_OPTIONS = { outFormat: oracledb.OUT_FORMAT_OBJECT, fetchArraySize: 10000 };
 const DASHBOARD_CACHE_KEY = "dashboard_cache_v5";
 
 function isMissingTableError(error) {
