@@ -10,23 +10,23 @@ import {
 } from "./redisCache.js";
 
 const DASHBOARD_DEPENDENCY_TIMEOUT_MS = Number(
-  process.env.STORE_DASHBOARD_DEPENDENCY_TIMEOUT_MS || 30000
+  process.env.STORE_DASHBOARD_DEPENDENCY_TIMEOUT_MS || 8000
 );
 const DASHBOARD_ORACLE_CONCURRENCY = Math.max(
   1,
-  Number(process.env.STORE_DASHBOARD_ORACLE_CONCURRENCY || 2)
+  Number(process.env.STORE_DASHBOARD_ORACLE_CONCURRENCY || 4)
 );
-const GOOGLE_FEEDBACK_TIMEOUT_MS = Number(
-  process.env.STORE_DASHBOARD_FEEDBACK_TIMEOUT_MS || 5000
-);
+const userTimeout = Number(process.env.STORE_DASHBOARD_FEEDBACK_TIMEOUT_MS);
+const GOOGLE_FEEDBACK_TIMEOUT_MS = isNaN(userTimeout) || userTimeout < 10000 ? 10000 : userTimeout;
+const parsedAttempts = parseInt(process.env.STORE_DASHBOARD_FEEDBACK_MAX_ATTEMPTS, 10);
 const GOOGLE_FEEDBACK_MAX_ATTEMPTS = Math.max(
   1,
-  Number(process.env.STORE_DASHBOARD_FEEDBACK_MAX_ATTEMPTS || 2)
+  isNaN(parsedAttempts) ? 1 : parsedAttempts
 );
 const DASHBOARD_ORACLE_START_SQL = "TRUNC(SYSDATE, 'MM')";
 const DASHBOARD_RETURNABLE_START_SQL = "TRUNC(SYSDATE, 'MM')";
 const ORACLE_EXECUTE_OPTIONS = { outFormat: oracledb.OUT_FORMAT_OBJECT, fetchArraySize: 10000 };
-const DASHBOARD_CACHE_KEY = "dashboard_cache_v5";
+const DASHBOARD_CACHE_KEY = "dashboard_cache_v7";
 
 function isMissingTableError(error) {
   return String(error?.message || "").includes("does not exist");
@@ -137,10 +137,16 @@ async function withTimeout(task, timeoutMs, label) {
 }
 
 async function runDashboardTask(label, task, fallbackValue) {
+  const start = Date.now();
   try {
-    return await withTimeout(task, DASHBOARD_DEPENDENCY_TIMEOUT_MS, label);
+    const result = await withTimeout(task, DASHBOARD_DEPENDENCY_TIMEOUT_MS, label);
+    console.log(`[store dashboard] ${label} completed in ${Date.now() - start}ms`);
+    return result;
   } catch (error) {
-    console.error(`[store dashboard] ${label} failed:`, error.message || error);
+    console.error(
+      `[store dashboard] ${label} failed after ${Date.now() - start}ms:`,
+      error.message || error
+    );
     return fallbackValue;
   }
 }
