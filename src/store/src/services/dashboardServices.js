@@ -1,22 +1,20 @@
 import pool from "../config/postgres.js";
+import { getConnection } from "../config/db.js";
+import oracledb from "../config/oracleClient.js";
 import {
   getOrSetCache,
   setCache,
   deleteCache,
   cacheKeys,
+  DEFAULT_TTL,
 } from "./redisCache.js";
-import * as storeIndentService from "./storeIndent.service.js";
-import * as poService from "./po.service.js";
-import * as repairGatePassService from "./repairGatePass.service.js";
-import * as returnableService from "./returnable.service.js";
-
 
 const DASHBOARD_DEPENDENCY_TIMEOUT_MS = Number(
-  process.env.STORE_DASHBOARD_DEPENDENCY_TIMEOUT_MS || 8000
+  process.env.STORE_DASHBOARD_DEPENDENCY_TIMEOUT_MS || 30000
 );
 const DASHBOARD_ORACLE_CONCURRENCY = Math.max(
   1,
-  Number(process.env.STORE_DASHBOARD_ORACLE_CONCURRENCY || 3)
+  Number(process.env.STORE_DASHBOARD_ORACLE_CONCURRENCY || 2)
 );
 const GOOGLE_FEEDBACK_TIMEOUT_MS = Number(
   process.env.STORE_DASHBOARD_FEEDBACK_TIMEOUT_MS || 5000
@@ -25,6 +23,10 @@ const GOOGLE_FEEDBACK_MAX_ATTEMPTS = Math.max(
   1,
   Number(process.env.STORE_DASHBOARD_FEEDBACK_MAX_ATTEMPTS || 2)
 );
+const DASHBOARD_ORACLE_START_SQL = "DATE '2025-04-01'";
+const DASHBOARD_RETURNABLE_START_SQL = "TO_DATE('01-APR-2025', 'DD-MON-YYYY')";
+const ORACLE_EXECUTE_OPTIONS = { outFormat: oracledb.OUT_FORMAT_OBJECT };
+const DASHBOARD_CACHE_KEY = "dashboard_cache_v5";
 
 function isMissingTableError(error) {
   return String(error?.message || "").includes("does not exist");
@@ -57,13 +59,6 @@ function buildPgFallbackRows(type) {
   return [];
 }
 
-function getCurrentMonthStart() {
-  const currentMonthStart = new Date();
-  currentMonthStart.setDate(1);
-  currentMonthStart.setHours(0, 0, 0, 0);
-  return currentMonthStart.getTime();
-}
-
 function getCurrentMonthStartDate() {
   const currentMonthStart = new Date();
   currentMonthStart.setDate(1);
@@ -76,29 +71,31 @@ function getCurrentMonthStartDate() {
   return `${year}-${month}-${day}`;
 }
 
-function parseRowDate(row, keys) {
-  for (const key of keys) {
-    const value = row?.[key];
-    if (!value) {
-      continue;
-    }
-
-    const parsed = new Date(value);
-    if (!Number.isNaN(parsed.getTime())) {
-      return parsed.getTime();
-    }
-  }
-
-  return null;
+function toNumber(value) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function filterRowsFromCurrentMonth(rows, keys) {
-  const monthStart = getCurrentMonthStart();
+function getDashboardDateSql(fromDate, fallbackSql = DASHBOARD_ORACLE_START_SQL) {
+  return fromDate ? "TO_DATE(:fromDate, 'YYYY-MM-DD')" : fallbackSql;
+}
 
-  return (rows || []).filter((row) => {
-    const parsedTime = parseRowDate(row, keys);
-    return parsedTime !== null && parsedTime >= monthStart;
-  });
+function getDashboardBinds(fromDate) {
+  return fromDate ? { fromDate } : {};
+}
+
+async function withOracleDashboardConnection(task) {
+  const conn = await getConnection();
+  try {
+    return await task(conn);
+  } finally {
+    await conn.close();
+  }
+}
+
+async function executeOracleRows(conn, sql, binds = {}) {
+  const result = await conn.execute(sql, binds, ORACLE_EXECUTE_OPTIONS);
+  return result.rows || [];
 }
 
 async function runDashboardPgQuery(label, queryText, fallbackType = "list") {
@@ -248,6 +245,662 @@ async function fetchVendorFeedbacks() {
   return [];
 }
 
+function buildReturnableDashboardCte(fromDate = null) {
+  const scopedFromDate = getDashboardDateSql(
+    fromDate,
+    DASHBOARD_RETURNABLE_START_SQL
+  );
+
+  return `
+    WITH issued_rows AS (
+      SELECT
+        t.vrno,
+        t.vrdate,
+        t.series,
+        t.acc_code,
+        t.item_code,
+        t.item_name,
+        t.remark,
+        t.um,
+        t.qtyissued,
+        t.mobile,
+        t.email
+      FROM view_itemtran_engine t
+      WHERE t.entity_code = 'SR'
+        AND t.series IN ('R3', 'N3')
+        AND t.vrdate >= ${scopedFromDate}
+    ),
+    received_rows AS (
+      SELECT
+        a.ref1_vrno,
+        a.item_code,
+        MAX(a.qtyrecd) AS qtyreceived
+      FROM view_itemtran_engine a
+      WHERE a.entity_code = 'SR'
+        AND a.trantype = 'RGP'
+        AND a.ref1_vrno IS NOT NULL
+        AND a.vrdate >= ${scopedFromDate}
+      GROUP BY a.ref1_vrno, a.item_code
+    )
+  `;
+}
+
+function buildTopPurchasedItems(rows) {
+  const itemMap = new Map();
+
+  for (const row of rows || []) {
+    const itemName = String(row?.ITEM_NAME || row?.item_name || "").trim();
+    if (!itemName) {
+      continue;
+    }
+
+    const existing = itemMap.get(itemName) || {
+      itemName,
+      orderCount: 0,
+      totalOrderQty: 0,
+    };
+
+    existing.orderCount += 1;
+    existing.totalOrderQty += toNumber(row?.QTYORDER || row?.qtyorder);
+    itemMap.set(itemName, existing);
+  }
+
+  return Array.from(itemMap.values())
+    .sort(
+      (a, b) =>
+        b.totalOrderQty - a.totalOrderQty || b.orderCount - a.orderCount
+    )
+    .slice(0, 10);
+}
+
+function buildTopVendors(rows) {
+  const vendorMap = new Map();
+
+  for (const row of rows || []) {
+    const vendorName = String(
+      row?.VENDOR_NAME || row?.vendor_name || row?.ACC_NAME || row?.acc_name || ""
+    ).trim();
+
+    if (!vendorName) {
+      continue;
+    }
+
+    const existing = vendorMap.get(vendorName) || {
+      vendorName,
+      uniquePoCount: 0,
+      totalItems: 0,
+      _vrnos: new Set(),
+    };
+
+    const vrno = String(row?.VRNO || row?.vrno || "").trim();
+    if (vrno && !existing._vrnos.has(vrno)) {
+      existing._vrnos.add(vrno);
+      existing.uniquePoCount += 1;
+    }
+
+    existing.totalItems += 1;
+    vendorMap.set(vendorName, existing);
+  }
+
+  return Array.from(vendorMap.values())
+    .map(({ _vrnos, ...vendor }) => vendor)
+    .sort(
+      (a, b) =>
+        b.uniquePoCount - a.uniquePoCount || b.totalItems - a.totalItems
+    )
+    .slice(0, 10);
+}
+
+async function fetchOracleDashboardSummary() {
+  return withOracleDashboardConnection(async (conn) => {
+    const statusRows = await executeOracleRows(
+      conn,
+      `
+        SELECT
+          COUNT(*) AS TOTAL_INDENTS,
+          COUNT(CASE WHEN t.po_no IS NOT NULL THEN 1 END) AS COMPLETED_INDENTS,
+          COUNT(CASE WHEN t.po_no IS NULL AND t.cancelleddate IS NULL THEN 1 END) AS PENDING_INDENTS,
+          COUNT(CASE WHEN t.po_no IS NULL AND t.cancelleddate IS NULL AND t.vrdate >= SYSDATE - 7 THEN 1 END) AS UPCOMING_INDENTS,
+          COUNT(CASE WHEN t.po_no IS NULL AND t.cancelleddate IS NULL AND t.vrdate < SYSDATE - 30 THEN 1 END) AS OVERDUE_INDENTS,
+          NVL(SUM(NVL(t.qtyindent, 0)), 0) AS TOTAL_INDENTED_QTY
+        FROM view_indent_engine t
+        WHERE t.entity_code = 'SR'
+          AND t.vrdate >= ${DASHBOARD_ORACLE_START_SQL}
+      `
+    );
+
+    const purchaseRows = await executeOracleRows(
+      conn,
+      `
+        SELECT
+          COUNT(*) AS TOTAL_PURCHASE_ORDERS,
+          NVL(SUM(NVL(t.qtyorder, 0)), 0) AS TOTAL_PURCHASED_QTY
+        FROM view_order_engine t
+        WHERE t.entity_code = 'SR'
+          AND t.series = 'U3'
+          AND t.qtycancelled IS NULL
+          AND t.vrdate >= ${DASHBOARD_ORACLE_START_SQL}
+          AND (
+            (t.qtyorder - t.qtyexecute) = 0
+            OR (t.qtyorder - t.qtyexecute) > t.qtyorder
+          )
+      `
+    );
+
+    const pendingPurchaseRows = await executeOracleRows(
+      conn,
+      `
+        SELECT COUNT(*) AS PENDING_PURCHASE_ORDERS
+        FROM view_order_engine t
+        WHERE t.entity_code = 'SR'
+          AND t.series = 'U3'
+          AND NVL(t.qtycancelled, 0) = 0
+          AND t.vrdate >= ${DASHBOARD_ORACLE_START_SQL}
+          AND NVL(t.qtyexecute, 0) < NVL(t.qtyorder, 0)
+      `
+    );
+
+    let totalIssuedQuantity = 0;
+    try {
+      const issueRows = await executeOracleRows(
+        conn,
+        `
+          SELECT NVL(SUM(NVL(t.qtyissue, 0)), 0) AS TOTAL_ISSUED_QTY
+          FROM view_issue_engine t
+          WHERE t.entity_code = 'SR'
+            AND t.vrdate >= ${DASHBOARD_ORACLE_START_SQL}
+        `
+      );
+      totalIssuedQuantity = toNumber(issueRows[0]?.TOTAL_ISSUED_QTY);
+    } catch (error) {
+      console.warn(
+        "[store dashboard] Oracle issue summary failed:",
+        error.message || error
+      );
+    }
+
+    let outOfStockCount = 0;
+    try {
+      const stockRows = await executeOracleRows(
+        conn,
+        `
+          SELECT COUNT(*) AS OUT_OF_STOCK_COUNT
+          FROM view_item_stock_engine t
+          WHERE t.entity_code = 'SR'
+            AND NVL(t.yrclqty_engine, 0) <= 0
+            AND NVL(t.yropaqty, 0) > 0
+            AND t.item_nature IN ('SI')
+        `
+      );
+      outOfStockCount = toNumber(stockRows[0]?.OUT_OF_STOCK_COUNT);
+    } catch (error) {
+      console.warn(
+        "[store dashboard] Oracle stock summary failed:",
+        error.message || error
+      );
+    }
+
+    const statusData = statusRows[0] || {};
+    const purchaseData = purchaseRows[0] || {};
+    const pendingPurchaseData = pendingPurchaseRows[0] || {};
+    const totalIndents = toNumber(statusData.TOTAL_INDENTS);
+    const completedIndents = toNumber(statusData.COMPLETED_INDENTS);
+    const pendingIndents = toNumber(statusData.PENDING_INDENTS);
+    const upcomingIndents = toNumber(statusData.UPCOMING_INDENTS);
+    const overdueIndents = toNumber(statusData.OVERDUE_INDENTS);
+
+    const roundPercent = (value) => Math.round(value * 10) / 10;
+    const overallProgress = totalIndents > 0 ? (completedIndents / totalIndents) * 100 : 0;
+    const completedPercent = totalIndents > 0 ? (completedIndents / totalIndents) * 100 : 0;
+    const pendingPercent = totalIndents > 0 ? (pendingIndents / totalIndents) * 100 : 0;
+    const upcomingPercent = totalIndents > 0 ? (upcomingIndents / totalIndents) * 100 : 0;
+    const overduePercent = totalIndents > 0 ? (overdueIndents / totalIndents) * 100 : 0;
+
+    return {
+      totalIndents,
+      completedIndents,
+      pendingIndents,
+      upcomingIndents,
+      overdueIndents,
+      pendingPurchaseOrders: toNumber(
+        pendingPurchaseData.PENDING_PURCHASE_ORDERS
+      ),
+      overallProgress: roundPercent(overallProgress),
+      completedPercent: roundPercent(completedPercent),
+      pendingPercent: roundPercent(pendingPercent),
+      upcomingPercent: roundPercent(upcomingPercent),
+      overduePercent: roundPercent(overduePercent),
+      totalIndentedQuantity: toNumber(statusData.TOTAL_INDENTED_QTY),
+      totalPurchaseOrders: toNumber(purchaseData.TOTAL_PURCHASE_ORDERS),
+      totalPurchasedQuantity: toNumber(purchaseData.TOTAL_PURCHASED_QTY),
+      totalIssuedQuantity,
+      outOfStockCount,
+      topPurchasedItems: [],
+      topVendors: [],
+    };
+  });
+}
+
+async function fetchOracleDashboardIndentRows(fromDate) {
+  const scopedDateSql = getDashboardDateSql(fromDate);
+  const binds = getDashboardBinds(fromDate);
+
+  return withOracleDashboardConnection(async (conn) => {
+    const pendingRows = await executeOracleRows(
+      conn,
+      `
+        WITH indent_rows AS (
+          SELECT
+            t.lastupdate + INTERVAL '3' DAY AS plannedtimestamp,
+            t.acknowledgedate,
+            lhs_utility.get_name('user_code', t.acknowledgeby) AS purchaser,
+            t.vrno AS indent_number,
+            t.vrdate AS indent_date,
+            UPPER(lhs_utility.get_name('emp_code', h.createdby)) AS indenter_name,
+            lhs_utility.get_name('div_code', t.div_code) AS division,
+            UPPER(lhs_utility.get_name('dept_code', t.dept_code)) AS department,
+            UPPER(t.item_name) AS item_name,
+            t.um,
+            t.qtyindent AS required_qty,
+            t.purpose_remark AS remark,
+            UPPER(t.remark) AS specification,
+            lhs_utility.get_name('cost_code', t.cost_code) AS cost_project
+          FROM view_indent_engine t
+          LEFT JOIN indent_head h
+            ON h.vrno = t.vrno
+          WHERE t.entity_code = 'SR'
+            AND t.po_no IS NULL
+            AND t.cancelleddate IS NULL
+            AND t.vrdate >= ${scopedDateSql}
+        )
+        SELECT
+          plannedtimestamp,
+          acknowledgedate,
+          purchaser,
+          indent_number,
+          indent_date,
+          indenter_name,
+          indenter_name AS employee_name,
+          division,
+          department,
+          item_name,
+          um,
+          required_qty,
+          required_qty AS indent_quantity,
+          remark,
+          specification,
+          cost_project
+        FROM indent_rows
+        ORDER BY indent_date DESC, indent_number DESC
+      `,
+      binds
+    );
+
+    const historyRows = await executeOracleRows(
+      conn,
+      `
+        WITH indent_rows AS (
+          SELECT
+            t.lastupdate + INTERVAL '3' DAY AS plannedtimestamp,
+            t.vrno AS indent_number,
+            t.vrdate AS indent_date,
+            UPPER(lhs_utility.get_name('emp_code', h.createdby)) AS indenter_name,
+            lhs_utility.get_name('div_code', t.div_code) AS division,
+            lhs_utility.get_name('dept_code', t.dept_code) AS department,
+            t.item_code,
+            UPPER(t.item_name) AS item_name,
+            t.qtyindent AS required_qty,
+            t.um,
+            t.acknowledgedate,
+            lhs_utility.get_name('user_code', t.acknowledgeby) AS purchaser,
+            t.purpose_remark AS remark,
+            UPPER(t.remark) AS specification,
+            lhs_utility.get_name('cost_code', t.cost_code) AS cost_project,
+            t.cancelleddate,
+            t.cancelled_remark
+          FROM view_indent_engine t
+          LEFT JOIN indent_head h
+            ON h.vrno = t.vrno
+          WHERE t.entity_code = 'SR'
+            AND t.vrdate >= ${scopedDateSql}
+        )
+        SELECT
+          plannedtimestamp,
+          indent_number,
+          indent_date,
+          indenter_name,
+          indenter_name AS employee_name,
+          division,
+          department,
+          item_code,
+          item_name,
+          required_qty,
+          required_qty AS indent_quantity,
+          um,
+          acknowledgedate,
+          purchaser,
+          remark,
+          specification,
+          cost_project,
+          cancelleddate,
+          cancelled_remark
+        FROM indent_rows
+        ORDER BY indent_date DESC, indent_number DESC
+      `,
+      binds
+    );
+
+    return { pendingRows, historyRows };
+  });
+}
+
+async function fetchOracleDashboardPoRows(fromDate) {
+  const scopedDateSql = getDashboardDateSql(fromDate);
+  const binds = getDashboardBinds(fromDate);
+
+  return withOracleDashboardConnection(async (conn) => {
+    const pendingRows = await executeOracleRows(
+      conn,
+      `
+        WITH indent_lookup AS (
+          SELECT vrno, MAX(indent_remark) AS indent_remark
+          FROM view_indent_engine
+          WHERE entity_code = 'SR'
+          GROUP BY vrno
+        )
+        SELECT
+          t.duedate + NUMTODSINTERVAL(20, 'HOUR') AS PLANNED_TIMESTAMP,
+          NVL(a.indent_remark, '') AS INDENTER,
+          NVL(a.vrno, '') AS INDENT_NO,
+          t.vrno AS VRNO,
+          t.vrdate AS VRDATE,
+          lhs_utility.get_name('acc_code', t.acc_code) AS VENDOR_NAME,
+          t.item_name AS ITEM_NAME,
+          NVL(t.cramt, 0) AS POAMOUNT,
+          t.qtyorder AS QTYORDER,
+          t.um AS UM,
+          NVL(t.qtyexecute, 0) AS QTYEXECUTE,
+          (NVL(t.qtyorder, 0) - NVL(t.qtyexecute, 0)) AS BALANCE_QTY
+        FROM view_order_engine t
+        LEFT JOIN indent_lookup a
+          ON a.vrno = t.indent_vrno
+        WHERE t.entity_code = 'SR'
+          AND t.series = 'U3'
+          AND NVL(t.qtycancelled, 0) = 0
+          AND t.vrdate >= ${scopedDateSql}
+          AND NVL(t.qtyexecute, 0) < NVL(t.qtyorder, 0)
+        ORDER BY t.vrdate DESC, t.vrno DESC
+      `,
+      binds
+    );
+
+    const historyRows = await executeOracleRows(
+      conn,
+      `
+        WITH indent_lookup AS (
+          SELECT vrno, MAX(indent_remark) AS indent_remark
+          FROM view_indent_engine
+          WHERE entity_code = 'SR'
+          GROUP BY vrno
+        )
+        SELECT
+          t.duedate + NUMTODSINTERVAL(20, 'HOUR') AS PLANNED_TIMESTAMP,
+          NVL(a.indent_remark, '') AS INDENTER,
+          NVL(a.vrno, '') AS INDENT_NO,
+          t.vrno AS VRNO,
+          t.vrdate AS VRDATE,
+          lhs_utility.get_name('acc_code', t.acc_code) AS VENDOR_NAME,
+          t.item_name AS ITEM_NAME,
+          NVL(t.cramt, 0) AS POAMOUNT,
+          t.qtyorder AS QTYORDER,
+          t.um AS UM,
+          NVL(t.qtyexecute, 0) AS QTYEXECUTE,
+          (NVL(t.qtyorder, 0) - NVL(t.qtyexecute, 0)) AS BALANCE_QTY
+        FROM view_order_engine t
+        LEFT JOIN indent_lookup a
+          ON a.vrno = t.indent_vrno
+        WHERE t.entity_code = 'SR'
+          AND t.series = 'U3'
+          AND NVL(t.qtycancelled, 0) = 0
+          AND t.vrdate >= ${scopedDateSql}
+          AND (NVL(t.qtyorder, 0) - NVL(t.qtyexecute, 0)) <= 0
+        ORDER BY t.vrdate DESC, t.vrno DESC
+      `,
+      binds
+    );
+
+    return {
+      pendingRows,
+      historyRows,
+      pendingTotal: pendingRows.length,
+      historyTotal: historyRows.length,
+    };
+  });
+}
+
+async function fetchOracleDashboardRepairRows(fromDate) {
+  const scopedDateSql = getDashboardDateSql(fromDate);
+  const binds = getDashboardBinds(fromDate);
+
+  return withOracleDashboardConnection(async (conn) => {
+    const pendingRows = await executeOracleRows(
+      conn,
+      `
+        SELECT
+          t.vrno,
+          t.vrdate,
+          lhs_utility.get_name('dept_code', t.dept_code) AS department,
+          lhs_utility.get_name('acc_code', t.acc_code) AS partyname,
+          t.item_name,
+          t.item_code,
+          t.qtyissued,
+          t.um,
+          t.app_remark,
+          t.remark
+        FROM view_itemtran_engine t
+        WHERE t.entity_code = 'SR'
+          AND t.series = 'P3'
+          AND t.vrdate >= ${scopedDateSql}
+          AND t.qty1 IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM view_itemtran_engine a
+            WHERE a.entity_code = 'SR'
+              AND a.series = 'A3'
+              AND a.ref1_vrno = t.vrno
+              AND a.vrdate >= ${scopedDateSql}
+          )
+        ORDER BY t.vrdate DESC, t.vrno DESC
+      `,
+      binds
+    );
+
+    const historyRows = await executeOracleRows(
+      conn,
+      `
+        SELECT
+          t.ref1_vrno AS repair_gate_pass,
+          t.vrno AS receive_gate_pass,
+          t.vrdate AS received_date,
+          lhs_utility.get_name('dept_code', t.dept_code) AS department,
+          lhs_utility.get_name('acc_code', t.acc_code) AS partyname,
+          t.item_name,
+          t.item_code,
+          t.qtyrecd,
+          t.um,
+          t.app_remark,
+          t.remark
+        FROM view_itemtran_engine t
+        WHERE t.entity_code = 'SR'
+          AND t.series = 'A3'
+          AND t.vrdate >= ${scopedDateSql}
+        ORDER BY t.vrdate DESC, t.vrno DESC
+      `,
+      binds
+    );
+
+    return { pendingRows, historyRows };
+  });
+}
+
+async function fetchOracleDashboardReturnableRows(fromDate) {
+  const binds = getDashboardBinds(fromDate);
+
+  return withOracleDashboardConnection(async (conn) => {
+    return executeOracleRows(
+      conn,
+      `
+        ${buildReturnableDashboardCte(fromDate)}
+        SELECT
+          CASE
+            WHEN i.series = 'R3' THEN 'RETURNABLE'
+            WHEN i.series = 'N3' THEN 'NON RETURANABLE'
+            ELSE 'OTHER'
+          END AS GATEPASS_TYPE,
+          i.vrdate AS VRDATE,
+          i.vrno AS VRNO,
+          lhs_utility.get_name('acc_code', i.acc_code) AS PARTY_NAME,
+          i.item_code AS ITEM_CODE,
+          i.item_name AS ITEM_NAME,
+          i.remark AS REMARK,
+          i.um AS UNIT,
+          i.qtyissued AS QTYISSUED,
+          r.qtyreceived AS QTYRECEIVED,
+          i.mobile AS MOBILE,
+          i.email AS EMAIL,
+          CASE
+            WHEN r.ref1_vrno IS NOT NULL THEN 'COMPLETED'
+            ELSE 'PENDING'
+          END AS GATEPASS_STATUS
+        FROM issued_rows i
+        LEFT JOIN received_rows r
+          ON r.ref1_vrno = i.vrno
+         AND r.item_code = i.item_code
+        ORDER BY i.vrdate DESC
+      `,
+      binds
+    );
+  });
+}
+
+function normalizeCacheScope(fromDate) {
+  return fromDate || "all";
+}
+
+export async function fetchDashboardPendingIndents(fromDate = null) {
+  return getOrSetCache(
+    cacheKeys.indentPending(normalizeCacheScope(fromDate)),
+    async () => {
+      const result = await fetchOracleDashboardIndentRows(fromDate);
+      return result.pendingRows || [];
+    },
+    DEFAULT_TTL.INDENT
+  );
+}
+
+export async function fetchDashboardIndentHistory(fromDate = null) {
+  return getOrSetCache(
+    cacheKeys.indentHistory(normalizeCacheScope(fromDate)),
+    async () => {
+      const result = await fetchOracleDashboardIndentRows(fromDate);
+      return result.historyRows || [];
+    },
+    DEFAULT_TTL.INDENT
+  );
+}
+
+export async function fetchDashboardPoPending(fromDate = null) {
+  return getOrSetCache(
+    cacheKeys.poPending(normalizeCacheScope(fromDate)),
+    async () => {
+      const result = await fetchOracleDashboardPoRows(fromDate);
+      return {
+        rows: result.pendingRows || [],
+        total: toNumber(result.pendingTotal),
+      };
+    },
+    DEFAULT_TTL.PO
+  );
+}
+
+export async function fetchDashboardPoHistory(fromDate = null) {
+  return getOrSetCache(
+    cacheKeys.poHistory(normalizeCacheScope(fromDate)),
+    async () => {
+      const result = await fetchOracleDashboardPoRows(fromDate);
+      return {
+        rows: result.historyRows || [],
+        total: toNumber(result.historyTotal),
+      };
+    },
+    DEFAULT_TTL.PO
+  );
+}
+
+export async function fetchDashboardRepairPending(fromDate = null) {
+  return getOrSetCache(
+    cacheKeys.gatePassPending(normalizeCacheScope(fromDate)),
+    async () => {
+      const result = await fetchOracleDashboardRepairRows(fromDate);
+      return result.pendingRows || [];
+    },
+    DEFAULT_TTL.GATE_PASS
+  );
+}
+
+export async function fetchDashboardRepairHistory(fromDate = null) {
+  return getOrSetCache(
+    cacheKeys.gatePassReceived(normalizeCacheScope(fromDate)),
+    async () => {
+      const result = await fetchOracleDashboardRepairRows(fromDate);
+      return result.historyRows || [];
+    },
+    DEFAULT_TTL.GATE_PASS
+  );
+}
+
+export async function fetchDashboardReturnableDetails(fromDate = null) {
+  return getOrSetCache(
+    cacheKeys.returnableDetails(normalizeCacheScope(fromDate)),
+    () => fetchOracleDashboardReturnableRows(fromDate),
+    DEFAULT_TTL.RETURNABLE
+  );
+}
+
+export async function fetchDashboardRepairCounts(fromDate = null) {
+  const [pendingRows, historyRows] = await Promise.all([
+    fetchDashboardRepairPending(fromDate),
+    fetchDashboardRepairHistory(fromDate),
+  ]);
+
+  return {
+    pending: pendingRows.length,
+    history: historyRows.length,
+  };
+}
+
+export async function fetchDashboardReturnableStats(fromDate = null) {
+  const rows = await fetchDashboardReturnableDetails(fromDate);
+
+  return {
+    TOTAL_COUNT: rows.length,
+    RETURNABLE_COUNT: rows.filter((row) => row.GATEPASS_TYPE === "RETURNABLE").length,
+    NON_RETURNABLE_COUNT: rows.filter(
+      (row) => row.GATEPASS_TYPE === "NON RETURANABLE"
+    ).length,
+    RETURNABLE_COMPLETED_COUNT: rows.filter(
+      (row) =>
+        row.GATEPASS_TYPE === "RETURNABLE" &&
+        row.GATEPASS_STATUS === "COMPLETED"
+    ).length,
+    RETURNABLE_PENDING_COUNT: rows.filter(
+      (row) =>
+        row.GATEPASS_TYPE === "RETURNABLE" &&
+        row.GATEPASS_STATUS === "PENDING"
+    ).length,
+  };
+}
+
 async function buildDashboardPayload() {
   const currentMonthStartDate = getCurrentMonthStartDate();
   const googleFetchPromise = fetchVendorFeedbacks();
@@ -308,50 +961,50 @@ async function buildDashboardPayload() {
   const oracleFetchers = [
     () =>
       runDashboardTask(
-        "Oracle indent summary",
-        () => storeIndentService.getDashboardMetrics(),
+        "Oracle summary",
+        () => fetchOracleDashboardSummary(),
         {}
       ),
     () =>
       runDashboardTask(
         "Oracle pending indents",
-        () => storeIndentService.getPending(currentMonthStartDate),
+        () => fetchDashboardPendingIndents(),
         []
       ),
     () =>
       runDashboardTask(
         "Oracle history indents",
-        () => storeIndentService.getHistory(currentMonthStartDate),
+        () => fetchDashboardIndentHistory(),
         []
       ),
     () =>
       runDashboardTask(
-        "Oracle pending PO",
-        () => poService.getPoPending(currentMonthStartDate),
+        "Oracle pending purchase orders",
+        () => fetchDashboardPoPending(),
         { rows: [], total: 0 }
       ),
     () =>
       runDashboardTask(
-        "Oracle PO history",
-        () => poService.getPoHistory(currentMonthStartDate),
+        "Oracle purchase order history",
+        () => fetchDashboardPoHistory(),
         { rows: [], total: 0 }
       ),
     () =>
       runDashboardTask(
-        "Oracle pending repair gate pass",
-        () => repairGatePassService.getPendingRepairGatePass(currentMonthStartDate),
+        "Oracle pending repair gate passes",
+        () => fetchDashboardRepairPending(currentMonthStartDate),
         []
       ),
     () =>
       runDashboardTask(
         "Oracle repair gate pass history",
-        () => repairGatePassService.getReceivedRepairGatePass(currentMonthStartDate),
+        () => fetchDashboardRepairHistory(currentMonthStartDate),
         []
       ),
     () =>
       runDashboardTask(
         "Oracle returnable details",
-        () => returnableService.getReturnableDetails(currentMonthStartDate),
+        () => fetchDashboardReturnableDetails(currentMonthStartDate),
         []
       ),
   ];
@@ -380,51 +1033,62 @@ async function buildDashboardPayload() {
     returnableDetails,
   ] = oracleData;
 
-  const currentMonthPendingIndents = filterRowsFromCurrentMonth(
-    pendingIndents,
-    ["INDENT_DATE", "indent_date", "PLANNEDTIMESTAMP", "plannedtimestamp"]
-  );
-  const currentMonthHistoryIndents = filterRowsFromCurrentMonth(
-    historyIndents,
-    [
-      "ACKNOWLEDGEDATE",
-      "acknowledgedate",
-      "INDENT_DATE",
-      "indent_date",
-      "PLANNEDTIMESTAMP",
-      "plannedtimestamp",
-    ]
-  );
-  const currentMonthPoPending = filterRowsFromCurrentMonth(poPendingData?.rows, [
-    "VRDATE",
-    "vrdate",
-    "PLANNED_TIMESTAMP",
-    "planned_timestamp",
-  ]);
-  const currentMonthPoHistory = filterRowsFromCurrentMonth(poHistoryData?.rows, [
-    "VRDATE",
-    "vrdate",
-    "PLANNED_TIMESTAMP",
-    "planned_timestamp",
-  ]);
-  const currentMonthRepairPending = filterRowsFromCurrentMonth(repairPending, [
-    "VRDATE",
-    "vrdate",
-  ]);
-  const currentMonthRepairHistory = filterRowsFromCurrentMonth(repairHistory, [
-    "RECEIVED_DATE",
-    "received_date",
-    "VRDATE",
-    "vrdate",
-  ]);
-  const currentMonthReturnableDetails = filterRowsFromCurrentMonth(
-    returnableDetails,
-    ["VRDATE", "vrdate"]
-  );
-
   const vendorFeedbacks = await googleFetchPromise;
+  const combinedPoRows = [
+    ...(poPendingData.rows || []),
+    ...(poHistoryData.rows || []),
+  ];
 
   const stats = statsResult.rows?.[0] || {};
+  const derivedTotalIndents = historyIndents.length;
+  const derivedPendingIndents = pendingIndents.length;
+  const derivedCompletedIndents = Math.max(
+    derivedTotalIndents - derivedPendingIndents,
+    0
+  );
+  const derivedTotalIndentedQuantity = historyIndents.reduce(
+    (total, row) =>
+      total + toNumber(row?.INDENT_QUANTITY || row?.indent_quantity || row?.REQUIRED_QTY || row?.required_qty),
+    0
+  );
+  const derivedOverallProgress =
+    derivedTotalIndents > 0
+      ? Math.round((derivedCompletedIndents / derivedTotalIndents) * 1000) / 10
+      : 0;
+  const derivedPendingPercent =
+    derivedTotalIndents > 0
+      ? Math.round((derivedPendingIndents / derivedTotalIndents) * 1000) / 10
+      : 0;
+  const derivedCompletedPercent =
+    derivedTotalIndents > 0
+      ? Math.round((derivedCompletedIndents / derivedTotalIndents) * 1000) / 10
+      : 0;
+  const summary = {
+    ...(indentSummary || {}),
+    totalIndents: Number(indentSummary?.totalIndents || derivedTotalIndents),
+    completedIndents: Number(
+      indentSummary?.completedIndents || derivedCompletedIndents
+    ),
+    pendingIndents: Number(indentSummary?.pendingIndents || derivedPendingIndents),
+    totalIndentedQuantity: Number(
+      indentSummary?.totalIndentedQuantity || derivedTotalIndentedQuantity
+    ),
+    totalPurchaseOrders: Number(
+      indentSummary?.totalPurchaseOrders || poHistoryData.rows.length
+    ),
+    pendingPurchaseOrders: Number(poPendingData.total),
+    overallProgress: Number(
+      indentSummary?.overallProgress || derivedOverallProgress
+    ),
+    completedPercent: Number(
+      indentSummary?.completedPercent || derivedCompletedPercent
+    ),
+    pendingPercent: Number(
+      indentSummary?.pendingPercent || derivedPendingPercent
+    ),
+    topPurchasedItems: buildTopPurchasedItems(combinedPoRows),
+    topVendors: buildTopVendors(combinedPoRows),
+  };
 
   return {
     tasks: tasksResult.rows || [],
@@ -434,14 +1098,14 @@ async function buildDashboardPayload() {
     departmentStatus: deptWiseResult.rows || [],
     paymentTypeDistribution: paymentResult.rows || [],
     vendorWiseCosts: vendorResult.rows || [],
-    summary: indentSummary || {},
-    pendingIndents: currentMonthPendingIndents,
-    historyIndents: currentMonthHistoryIndents,
-    poPending: currentMonthPoPending,
-    poHistory: currentMonthPoHistory,
-    repairPending: currentMonthRepairPending,
-    repairHistory: currentMonthRepairHistory,
-    returnableDetails: currentMonthReturnableDetails,
+    summary,
+    pendingIndents: pendingIndents || [],
+    historyIndents: historyIndents || [],
+    poPending: poPendingData.rows,
+    poHistory: poHistoryData.rows,
+    repairPending: repairPending || [],
+    repairHistory: repairHistory || [],
+    returnableDetails: returnableDetails || [],
     feedbacks: vendorFeedbacks,
   };
 }
@@ -449,10 +1113,14 @@ async function buildDashboardPayload() {
 export async function invalidateRepairDashboardCache() {
   await deleteCache(cacheKeys.dashboardRepair());
   await deleteCache("dashboard_cache_v1");
+  await deleteCache("dashboard_cache_v2");
+  await deleteCache("dashboard_cache_v3");
+  await deleteCache("dashboard_cache_v4");
+  await deleteCache(DASHBOARD_CACHE_KEY);
 }
 
 export async function refreshDashboardData() {
-  const cacheKey = "dashboard_cache_v1";
+  const cacheKey = DASHBOARD_CACHE_KEY;
 
   try {
     const payload = await buildDashboardPayload();
@@ -469,7 +1137,7 @@ export async function refreshDashboardData() {
 }
 
 export async function fetchDashboardMetricsSnapshot() {
-  const cacheKey = "dashboard_cache_v1";
+  const cacheKey = DASHBOARD_CACHE_KEY;
 
   try {
     const data = await getOrSetCache(cacheKey, buildDashboardPayload, 300);

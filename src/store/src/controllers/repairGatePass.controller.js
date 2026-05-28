@@ -1,9 +1,12 @@
 // controllers/repairGatePass.controller.js
 import {
   getPendingRepairGatePass,
-  getReceivedRepairGatePass,
-  getRepairGatePassCounts,
 } from "../services/repairGatePass.service.js";
+import {
+  fetchDashboardRepairPending,
+  fetchDashboardRepairHistory,
+  fetchDashboardRepairCounts,
+} from "../services/dashboardServices.js";
 import {
   buildDownloadFilename,
   sendRowsAsExcel,
@@ -46,7 +49,7 @@ function annotateRows(rows = []) {
 
 export async function getPending(req, res) {
   try {
-    const rows = await getPendingRepairGatePass();
+    const rows = await fetchDashboardRepairPending();
     return res.json({
       success: true,
       data: rows,
@@ -63,7 +66,7 @@ export async function getPending(req, res) {
 
 export async function getReceived(req, res) {
   try {
-    const rows = await getReceivedRepairGatePass();
+    const rows = await fetchDashboardRepairHistory();
     return res.json({
       success: true,
       data: rows,
@@ -80,7 +83,7 @@ export async function getReceived(req, res) {
 
 export async function getCounts(req, res) {
   try {
-    const counts = await getRepairGatePassCounts();
+    const counts = await fetchDashboardRepairCounts();
     return res.json({
       success: true,
       data: counts,

@@ -1,6 +1,11 @@
 // src/controllers/storeIndent.controller.js
 import * as storeIndentService from "../services/storeIndent.service.js";
 import {
+  fetchDashboardMetricsSnapshot,
+  fetchDashboardPendingIndents,
+  fetchDashboardIndentHistory,
+} from "../services/dashboardServices.js";
+import {
   buildDownloadFilename,
   sendRowsAsExcel,
 } from "../utils/excel.helper.js";
@@ -86,7 +91,8 @@ export async function approveStoreIndent(req, res) {
 
 export async function getPendingIndents(req, res) {
   try {
-    const rows = await storeIndentService.getPending();
+    const rows = await fetchDashboardPendingIndents();
+    console.log(`[store indent] pending rows=${rows.length}`);
 
     return res.json({
       success: true,
@@ -103,7 +109,8 @@ export async function getPendingIndents(req, res) {
 
 export async function getHistory(req, res) {
   try {
-    const rows = await storeIndentService.getHistory();
+    const rows = await fetchDashboardIndentHistory();
+    console.log(`[store indent] history rows=${rows.length}`);
 
     return res.json({
       success: true,
@@ -120,8 +127,11 @@ export async function getHistory(req, res) {
 
 export async function getDashboard(req, res) {
   try {
-    const data = await storeIndentService.getDashboardMetrics();
-    return res.json({ success: true, data });
+    const payload = await fetchDashboardMetricsSnapshot();
+    console.log(
+      `[store indent dashboard] totalIndents=${payload.summary?.totalIndents || 0}, pendingIndents=${payload.summary?.pendingIndents || 0}`
+    );
+    return res.json({ success: true, data: payload.summary || {} });
   } catch (err) {
     console.error("getDashboard error:", err);
     return res

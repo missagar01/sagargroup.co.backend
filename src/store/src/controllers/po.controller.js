@@ -1,5 +1,8 @@
 // src/controllers/po.controller.js
-import * as poService from "../services/po.service.js";
+import {
+  fetchDashboardPoPending,
+  fetchDashboardPoHistory,
+} from "../services/dashboardServices.js";
 import {
   buildDownloadFilename,
   sendRowsAsExcel,
@@ -106,7 +109,8 @@ function annotatePoRows(rows = []) {
 export async function getPoPending(req, res) {
   try {
     // backend pagination removed – full list
-    const { rows, total } = await poService.getPoPending();
+    const { rows, total } = await fetchDashboardPoPending();
+    console.log(`[store po] pending rows=${rows.length}, total=${total}`);
 
     return res.json({
       success: true,
@@ -123,7 +127,8 @@ export async function getPoPending(req, res) {
 
 export async function getPoHistory(req, res) {
   try {
-    const { rows, total } = await poService.getPoHistory();
+    const { rows, total } = await fetchDashboardPoHistory();
+    console.log(`[store po] history rows=${rows.length}, total=${total}`);
 
     return res.json({
       success: true,
@@ -140,7 +145,7 @@ export async function getPoHistory(req, res) {
 
 export async function downloadPoPending(req, res) {
   try {
-    const { rows = [] } = await poService.getPoPending();
+    const { rows = [] } = await fetchDashboardPoPending();
     const preparedRows = annotatePoRows(rows);
     await sendRowsAsExcel(res, {
       rows: preparedRows,
@@ -158,7 +163,7 @@ export async function downloadPoPending(req, res) {
 
 export async function downloadPoHistory(req, res) {
   try {
-    const { rows = [] } = await poService.getPoHistory();
+    const { rows = [] } = await fetchDashboardPoHistory();
     const preparedRows = annotatePoRows(rows);
     await sendRowsAsExcel(res, {
       rows: preparedRows,
