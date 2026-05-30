@@ -15,6 +15,12 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
 const FACE_DESCRIPTOR_LENGTH = 128;
 const FACE_MATCH_THRESHOLD = Number(process.env.FACE_MATCH_THRESHOLD || 0.4);
 const FACE_DUPLICATE_REJECT_THRESHOLD = Number(process.env.FACE_DUPLICATE_REJECT_THRESHOLD || 0.35);
+const FACE_FACE_ONLY_MATCH_THRESHOLD = Math.min(
+  FACE_MATCH_THRESHOLD,
+  Number(process.env.FACE_FACE_ONLY_MATCH_THRESHOLD || 0.28)
+);
+const FACE_FACE_ONLY_AMBIGUITY_MARGIN = Number(process.env.FACE_FACE_ONLY_AMBIGUITY_MARGIN || 0.08);
+const FACE_CACHE_TTL_MS = Number(process.env.FACE_CACHE_TTL_MS || 60000);
 
 const FACE_USER_LOOKUP_QUERY = `
   SELECT id, user_name, employee_id
@@ -29,6 +35,9 @@ const FACE_USER_LOOKUP_FALLBACK_QUERY = `
   WHERE TRIM(user_name) = $1 OR TRIM(COALESCE(employee_id, '')) = $1
   LIMIT 1
 `;
+
+let registeredFaceCache = null;
+let registeredFaceCacheLoadedAt = 0;
 
 function getJwtSecret() {
   return (
@@ -123,40 +132,56 @@ async function findUserByLoginId(loginId) {
   return result.rows?.[0] || null;
 }
 
-async function findClosestRegisteredFace(descriptor, { excludeUserId = null } = {}) {
-  const params = ["face"];
-  let query = `SELECT user_id, transports FROM user_passkeys WHERE webauthn_user_id = $1`;
+function invalidateRegisteredFaceCache() {
+  registeredFaceCache = null;
+  registeredFaceCacheLoadedAt = 0;
+}
 
-  if (excludeUserId !== null && excludeUserId !== undefined) {
-    params.push(excludeUserId);
-    query += ` AND user_id <> $2`;
+async function loadRegisteredFaceCache() {
+  if (registeredFaceCache && Date.now() - registeredFaceCacheLoadedAt < FACE_CACHE_TTL_MS) {
+    return registeredFaceCache;
   }
 
-  const allFacesResult = await loginQuery(query, params);
+  const allFacesResult = await loginQuery(
+    `SELECT user_id, transports FROM user_passkeys WHERE webauthn_user_id = 'face'`
+  );
   const rows = allFacesResult.rows || [];
 
-  let bestMatch = {
-    userId: null,
-    distance: Infinity,
-  };
+  registeredFaceCache = rows
+    .map((row) => {
+      const descriptor = parseStoredDescriptor(row.transports);
+      if (!descriptor) {
+        console.warn(`[Face Biometrics] Skipping invalid stored descriptor for user_id ${row.user_id}`);
+        return null;
+      }
 
-  for (const row of rows) {
-    const dbDescriptor = parseStoredDescriptor(row.transports);
-    if (!dbDescriptor) {
-      console.warn(`[Face Biometrics] Skipping invalid stored descriptor for user_id ${row.user_id}`);
-      continue;
-    }
-
-    const distance = getEuclideanDistance(descriptor, dbDescriptor);
-    if (distance < bestMatch.distance) {
-      bestMatch = {
+      return {
         userId: row.user_id,
-        distance,
+        descriptor,
       };
-    }
-  }
+    })
+    .filter(Boolean);
+  registeredFaceCacheLoadedAt = Date.now();
 
-  return bestMatch;
+  return registeredFaceCache;
+}
+
+async function findRegisteredFaceByUserId(userId) {
+  const allFaces = await loadRegisteredFaceCache();
+  return allFaces.find((face) => face.userId === userId) || null;
+}
+
+async function findBestRegisteredFaces(descriptor, { excludeUserId = null, limit = 2 } = {}) {
+  const allFaces = await loadRegisteredFaceCache();
+
+  return allFaces
+    .filter((face) => excludeUserId === null || face.userId !== excludeUserId)
+    .map((face) => ({
+      userId: face.userId,
+      distance: getEuclideanDistance(descriptor, face.descriptor),
+    }))
+    .sort((first, second) => first.distance - second.distance)
+    .slice(0, limit);
 }
 
 // Memory store for challenges (since we don't want to use DB session just for challenges).
@@ -467,8 +492,8 @@ async function registerFace(req, res) {
       return res.status(400).json({ success: false, message: "Invalid face scan. Please scan again in proper light." });
     }
 
-    const closestOtherFace = await findClosestRegisteredFace(descriptor, { excludeUserId: user.id });
-    if (closestOtherFace.userId && closestOtherFace.distance < FACE_DUPLICATE_REJECT_THRESHOLD) {
+    const [closestOtherFace] = await findBestRegisteredFaces(descriptor, { excludeUserId: user.id, limit: 1 });
+    if (closestOtherFace?.userId && closestOtherFace.distance < FACE_DUPLICATE_REJECT_THRESHOLD) {
       console.warn(
         `[Face Biometrics] Registration rejected for user_id ${user.id}. Descriptor too close to user_id ${closestOtherFace.userId} at distance ${closestOtherFace.distance.toFixed(4)}`
       );
@@ -479,6 +504,7 @@ async function registerFace(req, res) {
     }
 
     const faceId = `face_${user.id}`;
+    invalidateRegisteredFaceCache();
     
     // Check if face is already registered, if so, delete it first
     await loginQuery(`DELETE FROM user_passkeys WHERE user_id = $1 AND webauthn_user_id = 'face'`, [user.id]);
@@ -496,7 +522,6 @@ async function registerFace(req, res) {
         0
       ]
     );
-
     res.status(200).json({ success: true, message: "Face registered successfully!" });
   } catch (error) {
     console.error("registerFace Error:", error);
@@ -509,13 +534,6 @@ async function loginFace(req, res) {
   try {
     const { username, descriptor } = req.body;
 
-    if (!String(username || "").trim()) {
-      return res.status(400).json({
-        success: false,
-        message: "Username or employee ID is required for face login.",
-      });
-    }
-
     if (!isValidDescriptor(descriptor)) {
       return res.status(400).json({ success: false, message: "A valid face descriptor is required" });
     }
@@ -526,42 +544,69 @@ async function loginFace(req, res) {
       return res.status(400).json({ success: false, message: "Invalid camera scan detected. Please position your face clearly in the camera light." });
     }
 
-    const claimedUser = await findUserByLoginId(username);
-    if (!claimedUser?.id) {
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
+    const normalizedUsername = String(username || "").trim();
+    let matchedUserId = null;
 
-    const passkeyResult = await loginQuery(
-      `SELECT transports FROM user_passkeys WHERE user_id = $1 AND webauthn_user_id = 'face' LIMIT 1`,
-      [claimedUser.id]
-    );
+    if (normalizedUsername) {
+      const claimedUser = await findUserByLoginId(normalizedUsername);
+      if (!claimedUser?.id) {
+        return res.status(404).json({ success: false, message: "User not found" });
+      }
 
-    if (!passkeyResult.rows || passkeyResult.rows.length === 0) {
-      return res.status(400).json({ success: false, message: "No registered face found for this user. Please register first." });
-    }
+      const claimedFace = await findRegisteredFaceByUserId(claimedUser.id);
+      if (!claimedFace) {
+        return res.status(400).json({ success: false, message: "No registered face found for this user. Please register first." });
+      }
 
-    const claimedDescriptor = parseStoredDescriptor(passkeyResult.rows[0].transports);
-    if (!claimedDescriptor) {
-      return res.status(500).json({ success: false, message: "Registered face data is corrupted. Please register again." });
-    }
+      const claimedDistance = getEuclideanDistance(descriptor, claimedFace.descriptor);
 
-    const claimedDistance = getEuclideanDistance(descriptor, claimedDescriptor);
-
-    console.log(
-      `[Face Biometrics] Claimed user '${username.trim()}' => distance=${claimedDistance.toFixed(4)}`
-    );
-
-    if (claimedDistance >= FACE_MATCH_THRESHOLD) {
-      console.warn(
-        `[Face Biometrics] Match rejected for claimed user '${username.trim()}'. Distance ${claimedDistance.toFixed(4)} is >= threshold ${FACE_MATCH_THRESHOLD}`
+      console.log(
+        `[Face Biometrics] Claimed user '${normalizedUsername}' => distance=${claimedDistance.toFixed(4)}`
       );
-      return res.status(400).json({
-        success: false,
-        message: "Face match failed for this user. Please retry in better light or use password login.",
-      });
-    }
 
-    const matchedUserId = claimedUser.id;
+      if (claimedDistance >= FACE_MATCH_THRESHOLD) {
+        console.warn(
+          `[Face Biometrics] Match rejected for claimed user '${normalizedUsername}'. Distance ${claimedDistance.toFixed(4)} is >= threshold ${FACE_MATCH_THRESHOLD}`
+        );
+        return res.status(400).json({
+          success: false,
+          message: "Face match failed for this user. Please retry in better light or use password login.",
+        });
+      }
+
+      matchedUserId = claimedUser.id;
+    } else {
+      const bestMatches = await findBestRegisteredFaces(descriptor, { limit: 2 });
+      const bestMatch = bestMatches[0];
+      const secondBestMatch = bestMatches[1];
+
+      if (!bestMatch?.userId) {
+        return res.status(400).json({ success: false, message: "No registered faces found. Please register first." });
+      }
+
+      console.log(
+        `[Face Biometrics] Face-only login => best_user=${bestMatch.userId}, best_distance=${bestMatch.distance.toFixed(4)}, second_distance=${secondBestMatch ? secondBestMatch.distance.toFixed(4) : "inf"}`
+      );
+
+      if (bestMatch.distance >= FACE_FACE_ONLY_MATCH_THRESHOLD) {
+        return res.status(400).json({
+          success: false,
+          message: "Face not recognized clearly. Please retry in better light or use password login.",
+        });
+      }
+
+      if (
+        secondBestMatch?.userId &&
+        secondBestMatch.distance <= bestMatch.distance + FACE_FACE_ONLY_AMBIGUITY_MARGIN
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Face match is ambiguous. Please retry with a clearer scan or use password login.",
+        });
+      }
+
+      matchedUserId = bestMatch.userId;
+    }
 
     // Retrieve user details from database
     const userResult = await loginQuery(
