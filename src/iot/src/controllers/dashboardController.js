@@ -1,16 +1,26 @@
 const mqttGatewayService = require('../services/mqttGatewayService');
 const postgresPersistenceService = require('../services/postgresPersistenceService');
 
+const respondIfPostgresNotReady = (res) => {
+  if (postgresPersistenceService.isReady()) {
+    return false;
+  }
+
+  res.status(503).json({
+    success: false,
+    message: 'PostgreSQL database is not ready',
+  });
+  return true;
+};
+
 const getStatus = (req, res) => {
   res.json(mqttGatewayService.getStatus());
 };
 
 const getMessages = async (req, res, next) => {
   try {
-    if (!postgresPersistenceService.isReady()) {
-      const error = new Error('PostgreSQL database is not ready');
-      error.statusCode = 503;
-      throw error;
+    if (respondIfPostgresNotReady(res)) {
+      return;
     }
 
     const persistedMessages = await postgresPersistenceService.getMessages();
@@ -22,10 +32,8 @@ const getMessages = async (req, res, next) => {
 
 const getSummary = async (req, res, next) => {
   try {
-    if (!postgresPersistenceService.isReady()) {
-      const error = new Error('PostgreSQL database is not ready');
-      error.statusCode = 503;
-      throw error;
+    if (respondIfPostgresNotReady(res)) {
+      return;
     }
 
     const summary = await postgresPersistenceService.getDashboardSummary();
