@@ -1,12 +1,14 @@
 // src/controllers/po.controller.js
 import {
-  fetchDashboardPoPending,
-  fetchDashboardPoHistory,
-} from "../services/dashboardServices.js";
+  getPoPending as getPoPendingRows,
+  getPoHistory as getPoHistoryRows,
+} from "../services/po.service.js";
 import {
   buildDownloadFilename,
   sendRowsAsExcel,
 } from "../utils/excel.helper.js";
+
+const DEFAULT_PO_FROM_DATE = "2025-04-01";
 
 const poBaseColumns = [
   { header: "Indent No.", key: "INDENT_NO", width: 20 },
@@ -34,6 +36,12 @@ const poHistoryDownloadColumns = [
 
 function buildPoFilename(type) {
   return buildDownloadFilename(`po-${type}`);
+}
+
+function resolvePoFromDateQuery(queryValue) {
+  return typeof queryValue === "string" && queryValue.trim()
+    ? queryValue.trim()
+    : DEFAULT_PO_FROM_DATE;
 }
 
 function formatDate(dateString) {
@@ -109,7 +117,8 @@ function annotatePoRows(rows = []) {
 export async function getPoPending(req, res) {
   try {
     // backend pagination removed – full list
-    const { rows, total } = await fetchDashboardPoPending();
+    const fromDate = resolvePoFromDateQuery(req.query.fromDate);
+    const { rows, total } = await getPoPendingRows(fromDate);
     console.log(`[store po] pending rows=${rows.length}, total=${total}`);
 
     return res.json({
@@ -127,7 +136,8 @@ export async function getPoPending(req, res) {
 
 export async function getPoHistory(req, res) {
   try {
-    const { rows, total } = await fetchDashboardPoHistory();
+    const fromDate = resolvePoFromDateQuery(req.query.fromDate);
+    const { rows, total } = await getPoHistoryRows(fromDate);
     console.log(`[store po] history rows=${rows.length}, total=${total}`);
 
     return res.json({
@@ -145,7 +155,8 @@ export async function getPoHistory(req, res) {
 
 export async function downloadPoPending(req, res) {
   try {
-    const { rows = [] } = await fetchDashboardPoPending();
+    const fromDate = resolvePoFromDateQuery(req.query.fromDate);
+    const { rows = [] } = await getPoPendingRows(fromDate);
     const preparedRows = annotatePoRows(rows);
     await sendRowsAsExcel(res, {
       rows: preparedRows,
@@ -163,7 +174,8 @@ export async function downloadPoPending(req, res) {
 
 export async function downloadPoHistory(req, res) {
   try {
-    const { rows = [] } = await fetchDashboardPoHistory();
+    const fromDate = resolvePoFromDateQuery(req.query.fromDate);
+    const { rows = [] } = await getPoHistoryRows(fromDate);
     const preparedRows = annotatePoRows(rows);
     await sendRowsAsExcel(res, {
       rows: preparedRows,

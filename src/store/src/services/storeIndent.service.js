@@ -3,6 +3,7 @@ import { getConnection } from "../config/db.js";
 import oracledb from "oracledb";
 import { getOrSetCache, deleteCache, cacheKeys, DEFAULT_TTL } from "./redisCache.js";
 
+const DEFAULT_INDENT_FROM_DATE = "2025-04-01";
 const DASHBOARD_FROM_DATE = "DATE '2025-04-01'";
 const DASHBOARD_INDENT_WHERE = `
       t.entity_code = 'SR'
@@ -34,8 +35,14 @@ function toNumber(field) {
   return Number.isFinite(num) ? num : 0;
 }
 
+function resolveIndentFromDate(fromDate) {
+  return typeof fromDate === "string" && fromDate.trim()
+    ? fromDate.trim()
+    : DEFAULT_INDENT_FROM_DATE;
+}
+
 function normalizeCacheScope(fromDate) {
-  return fromDate || "all";
+  return resolveIndentFromDate(fromDate);
 }
 
 /**
@@ -54,8 +61,10 @@ export async function invalidateIndentCaches() {
    ============================ */
 
 export async function getPending(fromDate = null) {
+  const resolvedFromDate = resolveIndentFromDate(fromDate);
+
   return await getOrSetCache(
-    cacheKeys.indentPending(normalizeCacheScope(fromDate)),
+    cacheKeys.indentPending(normalizeCacheScope(resolvedFromDate)),
     async () => {
       const conn = await getConnection();
       try {
@@ -63,9 +72,7 @@ export async function getPending(fromDate = null) {
           t.entity_code = 'SR'
           AND t.po_no IS NULL
           AND t.cancelleddate IS NULL
-          AND t.vrdate >= ${
-            fromDate ? "TO_DATE(:fromDate, 'YYYY-MM-DD')" : "DATE '2025-04-01'"
-          }
+          AND t.vrdate >= TO_DATE(:fromDate, 'YYYY-MM-DD')
         `;
 
         const sql = `
@@ -89,7 +96,7 @@ export async function getPending(fromDate = null) {
           ORDER BY t.vrdate DESC, t.vrno DESC
         `;
 
-        const result = await conn.execute(sql, fromDate ? { fromDate } : {}, {
+        const result = await conn.execute(sql, { fromDate: resolvedFromDate }, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         });
 
@@ -107,8 +114,10 @@ export async function getPending(fromDate = null) {
    ============================ */
 
 export async function getHistory(fromDate = null) {
+  const resolvedFromDate = resolveIndentFromDate(fromDate);
+
   return await getOrSetCache(
-    cacheKeys.indentHistory(normalizeCacheScope(fromDate)),
+    cacheKeys.indentHistory(normalizeCacheScope(resolvedFromDate)),
     async () => {
       const conn = await getConnection();
       try {
@@ -155,15 +164,11 @@ export async function getHistory(fromDate = null) {
 
         FROM view_indent_engine t
         WHERE t.entity_code = 'SR'
-          ${
-            fromDate
-              ? "AND t.vrdate >= TO_DATE(:fromDate, 'YYYY-MM-DD')"
-              : ""
-          }
+          AND t.vrdate >= TO_DATE(:fromDate, 'YYYY-MM-DD')
         ORDER BY t.vrdate DESC, t.vrno DESC
         `;
 
-        const result = await conn.execute(sql, fromDate ? { fromDate } : {}, {
+        const result = await conn.execute(sql, { fromDate: resolvedFromDate }, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         });
 
