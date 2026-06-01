@@ -1,15 +1,15 @@
 // src/controllers/returnable.controller.js
 import {
-    fetchDashboardReturnableDetails,
-    fetchDashboardReturnableStats,
-} from "../services/dashboardServices.js";
+    getReturnableDetails as getReturnableDetailsRows,
+    getReturnableStats as getReturnableStatsSnapshot,
+} from "../services/returnable.service.js";
 
 /**
  * Gets stats for returnable and non-returnable items.
  */
 export async function getStats(req, res) {
     try {
-        const stats = await fetchDashboardReturnableStats();
+        const stats = await getReturnableStatsSnapshot();
         return res.json({
             success: true,
             data: stats,
@@ -28,7 +28,7 @@ export async function getStats(req, res) {
  */
 export async function getDetails(req, res) {
     try {
-        const details = await fetchDashboardReturnableDetails();
+        const details = await getReturnableDetailsRows();
         return res.json({
             success: true,
             data: details,

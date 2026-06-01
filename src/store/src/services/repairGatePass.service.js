@@ -35,6 +35,7 @@ export async function getPendingRepairGatePass(fromDate = null) {
             AND t.vrdate >= ${
               fromDate ? "TO_DATE(:fromDate, 'YYYY-MM-DD')" : "DATE '2025-04-01'"
             }
+            AND t.vrdate < TRUNC(SYSDATE) + 1
             AND t.qty1 is null
             AND t.vrno NOT IN (
               SELECT t.ref1_vrno
@@ -44,6 +45,7 @@ export async function getPendingRepairGatePass(fromDate = null) {
                 AND t.vrdate >= ${
                   fromDate ? "TO_DATE(:fromDate, 'YYYY-MM-DD')" : "DATE '2025-04-01'"
                 }
+                AND t.vrdate < TRUNC(SYSDATE) + 1
             )
           ORDER BY t.vrdate DESC, t.vrno DESC
         `;
@@ -99,6 +101,7 @@ export async function getReceivedRepairGatePass(fromDate = null) {
             AND t.vrdate >= ${
               fromDate ? "TO_DATE(:fromDate, 'YYYY-MM-DD')" : "DATE '2025-04-01'"
             }
+            AND t.vrdate < TRUNC(SYSDATE) + 1
           ORDER BY t.vrdate DESC, t.vrno DESC
         `;
 
