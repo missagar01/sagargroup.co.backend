@@ -12,6 +12,7 @@ const MAX_PENDING_WRITES = 5000;
 const RETENTION_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 const SUMMARY_SLOT_MINUTES = 10;
 const SUMMARY_SLOT_MS = SUMMARY_SLOT_MINUTES * 60 * 1000;
+const SUMMARY_RETENTION_DAYS = 30;
 const TABLE_NAME = 'mqtt_messages';
 const AGGREGATE_UNIQUE_INDEX_NAME = 'mqtt_messages_slot_unique_idx';
 const AGGREGATE_UNIQUE_COLUMNS = ['topic', 'device_uid', 'slave_id', 'message_timestamp'];
@@ -61,8 +62,8 @@ class PostgresPersistenceService {
       clearInterval(this.retentionTimer);
     }
     this.retentionTimer = setInterval(() => {
-      this.pruneRowsBeforeCurrentMonth('timer').catch((error) => {
-        console.error('[Retention] Failed scheduled current-month cleanup:', error);
+      this.pruneRowsOutsideRetentionWindow('timer').catch((error) => {
+        console.error('[Retention] Failed scheduled rolling-window cleanup:', error);
       });
     }, RETENTION_CHECK_INTERVAL_MS);
 
@@ -113,20 +114,20 @@ class PostgresPersistenceService {
     return this.status === 'ready' && Boolean(this.pool);
   }
 
-  getCurrentMonthStart(referenceDate = new Date()) {
-    const monthStart = new Date(referenceDate);
-    monthStart.setDate(1);
-    monthStart.setHours(0, 0, 0, 0);
-    return monthStart;
+  getRetentionWindowStart(referenceDate = new Date()) {
+    const windowStart = new Date(referenceDate);
+    windowStart.setHours(0, 0, 0, 0);
+    windowStart.setDate(windowStart.getDate() - (SUMMARY_RETENTION_DAYS - 1));
+    return windowStart;
   }
 
-  isExpiredMonthSlot(slotTimestamp) {
+  isOutsideRetentionWindow(slotTimestamp) {
     const slotDate = new Date(slotTimestamp);
     if (Number.isNaN(slotDate.getTime())) {
       return false;
     }
 
-    return slotDate < this.getCurrentMonthStart();
+    return slotDate < this.getRetentionWindowStart();
   }
 
   getSlotTimestamp(timestampStr) {
@@ -163,8 +164,10 @@ class PostgresPersistenceService {
       return;
     }
 
-    if (this.isExpiredMonthSlot(slot)) {
-      console.log(`[Aggregator] Ignored message for expired-month slot ${slot}. Current-month retention is active.`);
+    if (this.isOutsideRetentionWindow(slot)) {
+      console.log(
+        `[Aggregator] Ignored message outside rolling ${SUMMARY_RETENTION_DAYS}-day window for slot ${slot}.`
+      );
       return;
     }
 
@@ -229,7 +232,7 @@ class PostgresPersistenceService {
       return;
     }
 
-    if (this.isExpiredMonthSlot(slotToFlush)) {
+    if (this.isOutsideRetentionWindow(slotToFlush)) {
       const discardedCount = deviceBuf.messageBuffer.length;
       deviceBuf.messageBuffer = [];
       deviceBuf.lastFlushedSlot = slotToFlush;
@@ -239,7 +242,7 @@ class PostgresPersistenceService {
       }
 
       console.log(
-        `[Aggregator] Discarded ${discardedCount} buffered message(s) for expired-month slot ${slotToFlush} on ${deviceKey}.`
+        `[Aggregator] Discarded ${discardedCount} buffered message(s) outside rolling ${SUMMARY_RETENTION_DAYS}-day window for slot ${slotToFlush} on ${deviceKey}.`
       );
       return;
     }
@@ -596,23 +599,23 @@ class PostgresPersistenceService {
     await this.pool.query(`TRUNCATE TABLE ${TABLE_NAME} RESTART IDENTITY`);
   }
 
-  async pruneRowsBeforeCurrentMonth(reason = 'manual') {
+  async pruneRowsOutsideRetentionWindow(reason = 'manual') {
     if (!this.pool) {
       return 0;
     }
 
-    const currentMonthStart = this.getCurrentMonthStart();
+    const retentionWindowStart = this.getRetentionWindowStart();
     const result = await this.pool.query(
       `
         DELETE FROM ${TABLE_NAME}
         WHERE message_timestamp < $1
       `,
-      [currentMonthStart.toISOString()]
+      [retentionWindowStart.toISOString()]
     );
 
     if (result.rowCount > 0) {
       console.log(
-        `[Retention] Deleted ${result.rowCount} row(s) older than current month during ${reason}. Boundary: ${currentMonthStart.toISOString()}`
+        `[Retention] Deleted ${result.rowCount} row(s) older than ${SUMMARY_RETENTION_DAYS} days during ${reason}. Boundary: ${retentionWindowStart.toISOString()}`
       );
     }
 
@@ -669,7 +672,7 @@ class PostgresPersistenceService {
       await this.backfillLegacyPayloadColumns();
       await this.dropLegacyPayloadColumns();
       await this.ensureAggregatedUniqueness();
-      await this.pruneRowsBeforeCurrentMonth('connect');
+      await this.pruneRowsOutsideRetentionWindow('connect');
       this.status = 'ready';
       this.lastError = null;
       this.retryAttempt = 0;

@@ -5,8 +5,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 const RANGE_LABELS = {
   day: 'Current Day',
-  week: 'Current Week',
-  month: 'Current Month',
+  week: 'Last 7 Days',
+  month: 'Last 30 Days',
 };
 
 const isNumber = (value) => value !== null && value !== undefined && Number.isFinite(value);
@@ -174,6 +174,12 @@ const startOfWeek = (date) => {
 const startOfMonth = (date) => {
   const clone = startOfDay(date);
   clone.setDate(1);
+  return clone;
+};
+
+const startOfRollingWindow = (date, totalDays) => {
+  const clone = startOfDay(date);
+  clone.setDate(clone.getDate() - Math.max(totalDays - 1, 0));
   return clone;
 };
 
@@ -569,7 +575,7 @@ const normalizeAggregateExtremes = (aggregate) => {
   };
 };
 
-const buildTrendBuckets = (records, mode, anchorTime) => {
+const buildTrendBuckets = (records, mode, rangeStart, rangeEnd, anchorTime) => {
   if (mode === 'day') {
     const buckets = new Map();
 
@@ -644,14 +650,15 @@ const buildTrendBuckets = (records, mode, anchorTime) => {
       .sort((left, right) => new Date(left.startTime).getTime() - new Date(right.startTime).getTime());
   }
 
-  const monthStart = startOfMonth(anchorTime);
+  const monthStart = rangeStart ? startOfDay(rangeStart) : startOfMonth(anchorTime);
+  const monthEnd = rangeEnd ? new Date(rangeEnd) : anchorTime;
   const buckets = [];
   let bucketStart = monthStart;
 
-  while (bucketStart <= anchorTime) {
+  while (bucketStart <= monthEnd) {
     const tentativeEnd = addDays(bucketStart, 6);
     tentativeEnd.setHours(23, 59, 59, 999);
-    const bucketEnd = new Date(Math.min(tentativeEnd.getTime(), anchorTime.getTime()));
+    const bucketEnd = new Date(Math.min(tentativeEnd.getTime(), monthEnd.getTime()));
     const bucketStop = new Date(bucketEnd.getTime());
     bucketStop.setHours(23, 59, 59, 999);
     const bucketRecords = records.filter(
@@ -721,7 +728,7 @@ const buildPeriodPayload = (records, mode, rangeStart, rangeEnd, anchorTime) => 
   return {
     rangeKey: mode,
     ...aggregate,
-    trend: buildTrendBuckets(records, mode, anchorTime),
+    trend: buildTrendBuckets(records, mode, rangeStart, rangeEnd, anchorTime),
     devices: buildDeviceSummary(records),
   };
 };
@@ -787,8 +794,8 @@ function buildDashboardSummary(messages) {
   }
 
   const dayStart = startOfDay(now);
-  const weekStart = startOfWeek(now);
-  const monthStart = startOfMonth(now);
+  const weekStart = startOfRollingWindow(now, 7);
+  const monthStart = startOfRollingWindow(now, 30);
   const dayRecords = records.filter((record) => record.timestamp >= dayStart && record.timestamp <= now);
   const weekRecords = records.filter((record) => record.timestamp >= weekStart && record.timestamp <= now);
   const monthRecords = records.filter((record) => record.timestamp >= monthStart && record.timestamp <= now);
