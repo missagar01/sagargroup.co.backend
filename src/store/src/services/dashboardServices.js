@@ -27,9 +27,19 @@ const DASHBOARD_ORACLE_START_SQL = "TRUNC(SYSDATE, 'MM')";
 const DASHBOARD_RETURNABLE_START_SQL = "TRUNC(SYSDATE, 'MM')";
 const ORACLE_EXECUTE_OPTIONS = { outFormat: oracledb.OUT_FORMAT_OBJECT, fetchArraySize: 10000 };
 const DASHBOARD_CACHE_KEY = "dashboard_cache_v7";
+const optionalOracleWarnings = new Set();
 
 function isMissingTableError(error) {
   return String(error?.message || "").includes("does not exist");
+}
+
+function logOptionalOracleWarningOnce(key, label, error) {
+  if (optionalOracleWarnings.has(key)) {
+    return;
+  }
+
+  optionalOracleWarnings.add(key);
+  console.log(`[store dashboard] ${label}:`, error.message || error);
 }
 
 function buildEmptyDashboardPayload() {
@@ -419,10 +429,18 @@ async function fetchOracleDashboardSummary() {
       );
       totalIssuedQuantity = toNumber(issueRows[0]?.TOTAL_ISSUED_QTY);
     } catch (error) {
-      console.warn(
-        "[store dashboard] Oracle issue summary failed:",
-        error.message || error
-      );
+      if (isMissingTableError(error)) {
+        logOptionalOracleWarningOnce(
+          "oracle-issue-summary-missing",
+          "Oracle issue summary skipped because view_issue_engine is unavailable",
+          error
+        );
+      } else {
+        console.warn(
+          "[store dashboard] Oracle issue summary failed:",
+          error.message || error
+        );
+      }
     }
 
     let outOfStockCount = 0;
@@ -440,10 +458,18 @@ async function fetchOracleDashboardSummary() {
       );
       outOfStockCount = toNumber(stockRows[0]?.OUT_OF_STOCK_COUNT);
     } catch (error) {
-      console.warn(
-        "[store dashboard] Oracle stock summary failed:",
-        error.message || error
-      );
+      if (isMissingTableError(error)) {
+        logOptionalOracleWarningOnce(
+          "oracle-stock-summary-missing",
+          "Oracle stock summary skipped because view_item_stock_engine is unavailable",
+          error
+        );
+      } else {
+        console.warn(
+          "[store dashboard] Oracle stock summary failed:",
+          error.message || error
+        );
+      }
     }
 
     const statusData = statusRows[0] || {};
@@ -1153,7 +1179,5 @@ export async function fetchDashboardMetricsSnapshot() {
     return buildEmptyDashboardPayload();
   }
 }
-
-
 
 
