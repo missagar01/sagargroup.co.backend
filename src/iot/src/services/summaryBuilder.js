@@ -1,5 +1,6 @@
-const SLOT_MS = 30 * 60 * 1000;
+const SLOT_MS = 10 * 60 * 1000;
 const SLOT_SECONDS = SLOT_MS / 1000;
+const SLOT_HOURS = SLOT_MS / (60 * 60 * 1000);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const RANGE_LABELS = {
@@ -173,6 +174,13 @@ const startOfWeek = (date) => {
 const startOfMonth = (date) => {
   const clone = startOfDay(date);
   clone.setDate(1);
+  return clone;
+};
+
+const floorToSlotStart = (date) => {
+  const clone = new Date(date);
+  const slotMinutes = Math.floor(clone.getMinutes() / 10) * 10;
+  clone.setMinutes(slotMinutes, 0, 0);
   return clone;
 };
 
@@ -358,7 +366,7 @@ const applyIntervalEnergy = (records) => {
 
   return records.map((record) => {
     const previous = previousByDevice.get(record.device) ?? null;
-    const expectedKwh = isNumber(record.kw) ? record.kw * 0.5 : null;
+    const expectedKwh = isNumber(record.kw) ? record.kw * SLOT_HOURS : null;
     const intervalKwh = resolveCounterIntervalKwh(previous, record, expectedKwh);
     previousByDevice.set(record.device, record);
 
@@ -566,8 +574,7 @@ const buildTrendBuckets = (records, mode, anchorTime) => {
     const buckets = new Map();
 
     records.forEach((record) => {
-      const slotStart = new Date(record.timestamp);
-      slotStart.setMinutes(slotStart.getMinutes() < 30 ? 0 : 30, 0, 0);
+      const slotStart = floorToSlotStart(record.timestamp);
       const key = slotStart.toISOString();
 
       if (!buckets.has(key)) {
@@ -719,16 +726,20 @@ const buildPeriodPayload = (records, mode, rangeStart, rangeEnd, anchorTime) => 
   };
 };
 
-const buildEmptyPeriod = (mode, anchorTime) => {
-  const emptyTime = anchorTime ? anchorTime.toISOString() : null;
+const buildEmptyPeriod = (mode, rangeStart, rangeEnd, lastSummaryTime = null) => {
+  const startTime = rangeStart ? rangeStart.toISOString() : null;
+  const endTime = rangeEnd ? rangeEnd.toISOString() : null;
+  const lastSummaryTimeIso = lastSummaryTime ? lastSummaryTime.toISOString() : null;
 
   return {
     rangeKey: mode,
     label: RANGE_LABELS[mode],
-    startTime: emptyTime,
-    endTime: emptyTime,
-    lastSummaryTime: emptyTime,
-    nextSummaryTime: emptyTime ? new Date(new Date(emptyTime).getTime() + SLOT_MS).toISOString() : null,
+    startTime,
+    endTime,
+    lastSummaryTime: lastSummaryTimeIso,
+    nextSummaryTime: lastSummaryTimeIso
+      ? new Date(new Date(lastSummaryTimeIso).getTime() + SLOT_MS).toISOString()
+      : null,
     samples: 0,
     totalEnergy: null,
     power: { avg: null, min: null, max: null },
@@ -757,33 +768,47 @@ function buildDashboardSummary(messages) {
   const records = applyIntervalEnergy(normalizedRecords);
   const anchorRecord = records.length > 0 ? records[records.length - 1] : null;
   const anchorTime = anchorRecord?.timestamp ?? null;
+  const now = new Date();
+
+  if (Number.isNaN(now.getTime())) {
+    throw new Error('Failed to resolve the current server time for IoT dashboard summary');
+  }
 
   if (!anchorTime) {
     return {
       anchorTime: null,
-      generatedAt: new Date().toISOString(),
+      generatedAt: now.toISOString(),
       periods: {
-        day: buildEmptyPeriod('day', null),
-        week: buildEmptyPeriod('week', null),
-        month: buildEmptyPeriod('month', null),
+        day: buildEmptyPeriod('day', null, null, null),
+        week: buildEmptyPeriod('week', null, null, null),
+        month: buildEmptyPeriod('month', null, null, null),
       },
     };
   }
 
-  const dayStart = startOfDay(anchorTime);
-  const weekStart = startOfWeek(anchorTime);
-  const monthStart = startOfMonth(anchorTime);
-  const dayRecords = records.filter((record) => record.timestamp >= dayStart && record.timestamp <= anchorTime);
-  const weekRecords = records.filter((record) => record.timestamp >= weekStart && record.timestamp <= anchorTime);
-  const monthRecords = records.filter((record) => record.timestamp >= monthStart && record.timestamp <= anchorTime);
+  const dayStart = startOfDay(now);
+  const weekStart = startOfWeek(now);
+  const monthStart = startOfMonth(now);
+  const dayRecords = records.filter((record) => record.timestamp >= dayStart && record.timestamp <= now);
+  const weekRecords = records.filter((record) => record.timestamp >= weekStart && record.timestamp <= now);
+  const monthRecords = records.filter((record) => record.timestamp >= monthStart && record.timestamp <= now);
 
   return {
     anchorTime: anchorTime.toISOString(),
-    generatedAt: new Date().toISOString(),
+    generatedAt: now.toISOString(),
     periods: {
-      day: dayRecords.length > 0 ? buildPeriodPayload(dayRecords, 'day', dayStart, anchorTime, anchorTime) : buildEmptyPeriod('day', anchorTime),
-      week: weekRecords.length > 0 ? buildPeriodPayload(weekRecords, 'week', weekStart, anchorTime, anchorTime) : buildEmptyPeriod('week', anchorTime),
-      month: monthRecords.length > 0 ? buildPeriodPayload(monthRecords, 'month', monthStart, anchorTime, anchorTime) : buildEmptyPeriod('month', anchorTime),
+      day:
+        dayRecords.length > 0
+          ? buildPeriodPayload(dayRecords, 'day', dayStart, now, now)
+          : buildEmptyPeriod('day', dayStart, now, anchorTime),
+      week:
+        weekRecords.length > 0
+          ? buildPeriodPayload(weekRecords, 'week', weekStart, now, now)
+          : buildEmptyPeriod('week', weekStart, now, anchorTime),
+      month:
+        monthRecords.length > 0
+          ? buildPeriodPayload(monthRecords, 'month', monthStart, now, now)
+          : buildEmptyPeriod('month', monthStart, now, anchorTime),
     },
   };
 }

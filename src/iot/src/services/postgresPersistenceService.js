@@ -9,6 +9,9 @@ const { buildDashboardSummary } = require('./summaryBuilder');
 
 const DEFAULT_RETRY_DELAY_MS = 10000;
 const MAX_PENDING_WRITES = 5000;
+const RETENTION_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+const SUMMARY_SLOT_MINUTES = 10;
+const SUMMARY_SLOT_MS = SUMMARY_SLOT_MINUTES * 60 * 1000;
 const TABLE_NAME = 'mqtt_messages';
 const AGGREGATE_UNIQUE_INDEX_NAME = 'mqtt_messages_slot_unique_idx';
 const AGGREGATE_UNIQUE_COLUMNS = ['topic', 'device_uid', 'slave_id', 'message_timestamp'];
@@ -35,6 +38,7 @@ class PostgresPersistenceService {
     // Partitioned buffers per device/topic to handle multi-device isolation and prevent duplicates
     this.deviceBuffers = {}; // Map: deviceKey -> { activeSlot, messageBuffer, lastFlushedSlot }
     this.flushTimer = null;
+    this.retentionTimer = null;
   }
 
   async initialize(config) {
@@ -52,6 +56,15 @@ class PostgresPersistenceService {
     this.flushTimer = setInterval(() => {
       this.checkPeriodicFlush();
     }, 60000);
+
+    if (this.retentionTimer) {
+      clearInterval(this.retentionTimer);
+    }
+    this.retentionTimer = setInterval(() => {
+      this.pruneRowsBeforeCurrentMonth('timer').catch((error) => {
+        console.error('[Retention] Failed scheduled current-month cleanup:', error);
+      });
+    }, RETENTION_CHECK_INTERVAL_MS);
 
     await this.connect();
   }
@@ -100,14 +113,29 @@ class PostgresPersistenceService {
     return this.status === 'ready' && Boolean(this.pool);
   }
 
+  getCurrentMonthStart(referenceDate = new Date()) {
+    const monthStart = new Date(referenceDate);
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    return monthStart;
+  }
+
+  isExpiredMonthSlot(slotTimestamp) {
+    const slotDate = new Date(slotTimestamp);
+    if (Number.isNaN(slotDate.getTime())) {
+      return false;
+    }
+
+    return slotDate < this.getCurrentMonthStart();
+  }
+
   getSlotTimestamp(timestampStr) {
     try {
       const date = new Date(timestampStr);
       if (isNaN(date.getTime())) {
         return null;
       }
-      const minutes = date.getMinutes();
-      const slotMinutes = minutes < 30 ? 0 : 30;
+      const slotMinutes = Math.floor(date.getMinutes() / SUMMARY_SLOT_MINUTES) * SUMMARY_SLOT_MINUTES;
       
       const slotDate = new Date(date);
       slotDate.setMinutes(slotMinutes, 0, 0);
@@ -132,6 +160,11 @@ class PostgresPersistenceService {
 
     const slot = this.getSlotTimestamp(message.timestamp);
     if (!slot) {
+      return;
+    }
+
+    if (this.isExpiredMonthSlot(slot)) {
+      console.log(`[Aggregator] Ignored message for expired-month slot ${slot}. Current-month retention is active.`);
       return;
     }
 
@@ -196,6 +229,21 @@ class PostgresPersistenceService {
       return;
     }
 
+    if (this.isExpiredMonthSlot(slotToFlush)) {
+      const discardedCount = deviceBuf.messageBuffer.length;
+      deviceBuf.messageBuffer = [];
+      deviceBuf.lastFlushedSlot = slotToFlush;
+
+      if (deviceBuf.activeSlot === slotToFlush) {
+        deviceBuf.activeSlot = null;
+      }
+
+      console.log(
+        `[Aggregator] Discarded ${discardedCount} buffered message(s) for expired-month slot ${slotToFlush} on ${deviceKey}.`
+      );
+      return;
+    }
+
     if (!this.isReady()) {
       console.warn(`[Aggregator] Database is not ready. Keeping ${deviceBuf.messageBuffer.length} buffered messages in memory for ${deviceKey}.`);
       return;
@@ -216,7 +264,7 @@ class PostgresPersistenceService {
     try {
       const aggregated = this.aggregateMessages(bufferToFlush, slotToFlush);
       await this.insertAggregatedMessage(aggregated);
-      console.log(`[Aggregator] Successfully saved 30-min summary row for ${deviceKey} slot ${slotToFlush} to database.`);
+      console.log(`[Aggregator] Successfully saved ${SUMMARY_SLOT_MINUTES}-minute summary row for ${deviceKey} slot ${slotToFlush} to database.`);
     } catch (error) {
       console.error(`[Aggregator] Failed to save aggregated slot ${slotToFlush} for ${deviceKey}:`, error);
     }
@@ -337,7 +385,7 @@ class PostgresPersistenceService {
     }
 
     const currentTime = Date.now();
-    const slotDurationMs = 30 * 60 * 1000;
+    const slotDurationMs = SUMMARY_SLOT_MS;
 
     for (const deviceKey of Object.keys(this.deviceBuffers)) {
       const deviceBuf = this.deviceBuffers[deviceKey];
@@ -463,7 +511,7 @@ class PostgresPersistenceService {
             ${STRUCTURED_COLUMN_DEFINITIONS.map(({ column }) => column).join(',\n            ')},
             created_at
           FROM ${TABLE_NAME}
-          WHERE EXTRACT(MINUTE FROM message_timestamp) IN (0, 30)
+          WHERE MOD(EXTRACT(MINUTE FROM message_timestamp)::int, ${SUMMARY_SLOT_MINUTES}) = 0
             AND EXTRACT(SECOND FROM message_timestamp) = 0
           ORDER BY message_timestamp DESC, id DESC
           LIMIT $1
@@ -481,7 +529,7 @@ class PostgresPersistenceService {
             ${STRUCTURED_COLUMN_DEFINITIONS.map(({ column }) => column).join(',\n            ')},
             created_at
           FROM ${TABLE_NAME}
-          WHERE EXTRACT(MINUTE FROM message_timestamp) IN (0, 30)
+          WHERE MOD(EXTRACT(MINUTE FROM message_timestamp)::int, ${SUMMARY_SLOT_MINUTES}) = 0
             AND EXTRACT(SECOND FROM message_timestamp) = 0
             AND topic = ANY($2::text[])
           ORDER BY message_timestamp DESC, id DESC
@@ -548,6 +596,29 @@ class PostgresPersistenceService {
     await this.pool.query(`TRUNCATE TABLE ${TABLE_NAME} RESTART IDENTITY`);
   }
 
+  async pruneRowsBeforeCurrentMonth(reason = 'manual') {
+    if (!this.pool) {
+      return 0;
+    }
+
+    const currentMonthStart = this.getCurrentMonthStart();
+    const result = await this.pool.query(
+      `
+        DELETE FROM ${TABLE_NAME}
+        WHERE message_timestamp < $1
+      `,
+      [currentMonthStart.toISOString()]
+    );
+
+    if (result.rowCount > 0) {
+      console.log(
+        `[Retention] Deleted ${result.rowCount} row(s) older than current month during ${reason}. Boundary: ${currentMonthStart.toISOString()}`
+      );
+    }
+
+    return result.rowCount;
+  }
+
   async shutdown() {
     clearTimeout(this.retryTimer);
     this.retryTimer = null;
@@ -555,6 +626,11 @@ class PostgresPersistenceService {
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
       this.flushTimer = null;
+    }
+
+    if (this.retentionTimer) {
+      clearInterval(this.retentionTimer);
+      this.retentionTimer = null;
     }
 
     // Flush any remaining data in the buffer on shutdown
@@ -593,6 +669,7 @@ class PostgresPersistenceService {
       await this.backfillLegacyPayloadColumns();
       await this.dropLegacyPayloadColumns();
       await this.ensureAggregatedUniqueness();
+      await this.pruneRowsBeforeCurrentMonth('connect');
       this.status = 'ready';
       this.lastError = null;
       this.retryAttempt = 0;
