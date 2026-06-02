@@ -26,7 +26,8 @@ export const insertMachine = async (data) => {
 
 
 
-export const getAllMachines = async (limit = 50, offset = 0) => {
+export const getAllMachines = async (limit = 50, offset = 0, department = "") => {
+  const hasDepartmentFilter = String(department ?? "").trim() !== "";
   const query = `
     SELECT
       id,
@@ -48,10 +49,14 @@ export const getAllMachines = async (limit = 50, offset = 0) => {
       tag_no,
       user_allot
     FROM form_responses
+    ${hasDepartmentFilter ? "WHERE LOWER(TRIM(department)) = LOWER(TRIM($3))" : ""}
     ORDER BY id DESC
     LIMIT $1 OFFSET $2;
   `;
-  const result = await maintenancePool.query(query, [limit, offset]);
+  const values = hasDepartmentFilter
+    ? [limit, offset, department]
+    : [limit, offset];
+  const result = await maintenancePool.query(query, values);
   return result.rows;
 };
 

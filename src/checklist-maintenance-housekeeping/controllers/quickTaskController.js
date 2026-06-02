@@ -350,7 +350,6 @@ export const fetchUsers = async () => {
       SELECT DISTINCT doer_name AS name
       FROM maintenance_task_assign
       WHERE doer_name IS NOT NULL AND doer_name <> ''
-      ORDER BY LOWER(doer_name)
     `;
 
     const [mainResult, maintenanceResult] = await Promise.all([
