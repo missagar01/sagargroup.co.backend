@@ -156,19 +156,10 @@ export const getUniqueDoerNames = async (req, res) => {
     const result = await pool.query(
       `SELECT DISTINCT user_name
        FROM users 
-       WHERE LOWER(COALESCE(status, 'active')) = 'active'
+       WHERE LOWER(TRIM(COALESCE(status::text, 'active'))) = 'active'
          AND user_name IS NOT NULL AND TRIM(user_name) <> ''
-         AND LOWER(TRIM(user_name)) <> 'admin'
-         AND (
-           LOWER(TRIM(COALESCE(department, ''))) = LOWER(TRIM($1))
-           OR EXISTS (
-             SELECT 1
-             FROM unnest(
-               regexp_split_to_array(COALESCE(user_access, ''), '\\s*[,;]\\s*')
-             ) AS access_item(access_value)
-             WHERE LOWER(TRIM(access_value)) = LOWER(TRIM($1))
-           )
-         )
+         AND LOWER(TRIM(COALESCE(role::text, ''))) <> 'admin'
+         AND LOWER(TRIM(COALESCE(department, ''))) = LOWER(TRIM($1))
        ORDER BY user_name ASC`,
       [department]
     );
