@@ -30,7 +30,7 @@ import storeGRNRoutes from "./storeGRN.routes.js";
 import storeIssueRoutes from "./storeIssue.routes.js";
 import returnableRoutes from "./returnable.routes.js";
 import erpIndentRoutes from "./erpIndent.routes.js";
-
+import chatbotRoutes from "./chatbotRoutes.js";
 const router = Router();
 
 // Auth utility routes (local login/logout removed; shared login is /api/auth/login)
@@ -63,6 +63,6 @@ router.use("/settings", settingsRoutes);
 router.use("/store-grn-approval", storeGRNApproval);
 router.use("/departments", departmentRoutes);
 router.use("/division", divisionRoutes);
-
+router.use("/chatbot", chatbotRoutes);
 export default router;
 

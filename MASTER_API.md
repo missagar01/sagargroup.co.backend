@@ -208,11 +208,22 @@ Note: Same endpoints are also available via `/api/maintenance/...` alias. Token 
 | GET | `/api/mainatce/dashboard/departments` |
 | GET | `/api/mainatce/dashboard/staff` |
 
-## Store APIs (63)
+## Store APIs (72)
+
+Note: `/api/store/chatbot/*` endpoints use `Authorization: Bearer <API_KEY>` instead of the shared JWT token. `GET /api/store/chatbot/config` is a public helper route for local frontend wiring.
 
 | Method | Endpoint |
 |---|---|
 | GET | `/api/store/auth/hod/:department` |
+| GET | `/api/store/chatbot/config` |
+| GET | `/api/store/chatbot/items` |
+| GET | `/api/store/chatbot/stock/:itemCode` |
+| GET | `/api/store/chatbot/series` |
+| GET | `/api/store/chatbot/departments` |
+| GET | `/api/store/chatbot/cost-codes` |
+| GET | `/api/store/chatbot/employees` |
+| GET | `/api/store/chatbot/makes` |
+| POST | `/api/store/chatbot/indent` |
 | GET | `/api/store/cost-location` |
 | GET | `/api/store/cost-location/co` |
 | GET | `/api/store/cost-location/pm` |

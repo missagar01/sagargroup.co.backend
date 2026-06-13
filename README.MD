@@ -283,11 +283,22 @@ Note: Same endpoints are also available via `/api/maintenance/...` alias. Token 
 | GET | `/api/mainatce/dashboard/departments` |
 | GET | `/api/mainatce/dashboard/staff` |
 
-## Store APIs (63)
+## Store APIs (72)
+
+Note: `/api/store/chatbot/*` endpoints use `Authorization: Bearer <API_KEY>` instead of the shared JWT token. `GET /api/store/chatbot/config` is a public helper route for local frontend wiring.
 
 | Method | Endpoint |
 |---|---|
 | GET | `/api/store/auth/hod/:department` |
+| GET | `/api/store/chatbot/config` |
+| GET | `/api/store/chatbot/items` |
+| GET | `/api/store/chatbot/stock/:itemCode` |
+| GET | `/api/store/chatbot/series` |
+| GET | `/api/store/chatbot/departments` |
+| GET | `/api/store/chatbot/cost-codes` |
+| GET | `/api/store/chatbot/employees` |
+| GET | `/api/store/chatbot/makes` |
+| POST | `/api/store/chatbot/indent` |
 | GET | `/api/store/cost-location` |
 | GET | `/api/store/cost-location/co` |
 | GET | `/api/store/cost-location/pm` |
@@ -1122,6 +1133,7 @@ Machine create / update starter:
 
 Source:
 
+- `src/store/src/controllers/chatbotController.js`
 - `src/store/src/controllers/indent.controller.js`
 - `src/store/src/controllers/storeIndent.controller.js`
 - `src/store/src/controllers/department.controller.js`
@@ -1130,6 +1142,173 @@ Source:
 - `src/store/src/controllers/storeGRNApproval.controller.js`
 - `src/store/src/controllers/vendorRateUpdate.controller.js`
 - `src/store/src/controllers/threePartyApproval.controller.js`
+- `src/store/src/services/chatbotService.js`
+
+### Store chatbot API
+
+Auth note:
+
+- `/api/store/chatbot/config` is public.
+- All other `/api/store/chatbot/*` endpoints use `Authorization: Bearer <API_KEY>`.
+- These routes do not use the shared login JWT.
+
+Used by:
+
+- `GET /api/store/chatbot/config`
+- `GET /api/store/chatbot/items?q=:searchText`
+- `GET /api/store/chatbot/stock/:itemCode`
+- `GET /api/store/chatbot/series`
+- `GET /api/store/chatbot/departments`
+- `GET /api/store/chatbot/cost-codes`
+- `GET /api/store/chatbot/employees`
+- `GET /api/store/chatbot/makes`
+- `POST /api/store/chatbot/indent`
+
+Config response:
+
+```json
+{
+  "apiKey": "your_chatbot_api_key"
+}
+```
+
+Item search:
+
+Request:
+
+- `GET /api/store/chatbot/items?q=bearing`
+
+Response:
+
+```json
+[
+  {
+    "itemCode": "ITM001",
+    "itemName": "DEEP GROOVE BALL BEARING",
+    "um": "NOS"
+  }
+]
+```
+
+Stock lookup:
+
+Request:
+
+- `GET /api/store/chatbot/stock/ITM001`
+
+Response:
+
+```json
+{
+  "stock": 125
+}
+```
+
+Indent series response:
+
+```json
+[
+  {
+    "series": "I1",
+    "descr": "INDENT- SMS",
+    "entityCode": "SR",
+    "divCode": "SM"
+  },
+  {
+    "series": "I5",
+    "descr": "INDENT - GENERAL",
+    "entityCode": "SR",
+    "divCode": null
+  }
+]
+```
+
+Departments response:
+
+```json
+[
+  {
+    "deptCode": "MECH",
+    "deptName": "Mechanical"
+  }
+]
+```
+
+Cost codes response:
+
+```json
+[
+  {
+    "costCode": "CC001",
+    "costName": "General Maintenance"
+  }
+]
+```
+
+Employees response:
+
+```json
+[
+  {
+    "empCode": "SR00113",
+    "empName": "Amit Kumar"
+  }
+]
+```
+
+Makes response:
+
+```json
+[
+  {
+    "makeCode": "SKF",
+    "makeName": "SKF"
+  }
+]
+```
+
+Create indent:
+
+```json
+{
+  "itemCode": "ITM001",
+  "qty": 10,
+  "deptCode": "MECH",
+  "series": "I1",
+  "specs": "SKF 6205 bearing",
+  "purpose": "Urgent replacement for motor",
+  "dueDate": "2026-03-30",
+  "make": "SKF",
+  "userCode": "SR002",
+  "costCode": "CC001",
+  "empName": "Amit Kumar",
+  "divCode": "SM"
+}
+```
+
+Create indent success:
+
+```json
+{
+  "success": true,
+  "vrNo": "I126Y-00001",
+  "message": "Indent I126Y-00001 raised successfully in division SM!"
+}
+```
+
+Create indent validation error examples:
+
+```json
+{
+  "error": "itemCode is required."
+}
+```
+
+```json
+{
+  "error": "divCode is required for series I5."
+}
+```
 
 ### Store indent create
 
