@@ -1,6 +1,7 @@
 import express from "express";
 import {
   getDashboardMetrics,
+  getDashboardFeedbacks,
   getPendingIndents,
   getHistory,
   getPoPending,
@@ -15,6 +16,7 @@ const router = express.Router();
 
 // GET dashboard summary (Consolidated)
 router.get("/", authenticate, getDashboardMetrics);
+router.get("/feedbacks", authenticate, getDashboardFeedbacks);
 
 // Individual Endpoints for Testing
 router.get("/pending-indents", authenticate, getPendingIndents);

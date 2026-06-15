@@ -16,24 +16,31 @@ const DASHBOARD_ORACLE_CONCURRENCY = Math.max(
   1,
   Number(process.env.STORE_DASHBOARD_ORACLE_CONCURRENCY || 4)
 );
-const userTimeout = Number(process.env.STORE_DASHBOARD_FEEDBACK_TIMEOUT_MS);
-const GOOGLE_FEEDBACK_TIMEOUT_MS =
-  isNaN(userTimeout) || userTimeout < 1000 ? 2000 : userTimeout;
-const parsedAttempts = parseInt(process.env.STORE_DASHBOARD_FEEDBACK_MAX_ATTEMPTS, 10);
-const GOOGLE_FEEDBACK_MAX_ATTEMPTS = Math.max(
+const parsedFeedbackTimeout = Number(
+  process.env.STORE_DASHBOARD_FEEDBACK_TIMEOUT_MS
+);
+const DASHBOARD_FEEDBACK_TIMEOUT_MS =
+  Number.isFinite(parsedFeedbackTimeout) && parsedFeedbackTimeout >= 1000
+    ? parsedFeedbackTimeout
+    : 3000;
+const parsedFeedbackAttempts = parseInt(
+  process.env.STORE_DASHBOARD_FEEDBACK_MAX_ATTEMPTS,
+  10
+);
+const DASHBOARD_FEEDBACK_MAX_ATTEMPTS = Math.max(
   1,
-  Math.min(3, isNaN(parsedAttempts) ? 1 : parsedAttempts)
+  Math.min(3, Number.isNaN(parsedFeedbackAttempts) ? 1 : parsedFeedbackAttempts)
 );
 const parsedFeedbackTotalTimeout = Number(
   process.env.STORE_DASHBOARD_FEEDBACK_TOTAL_TIMEOUT_MS
 );
-const GOOGLE_FEEDBACK_TOTAL_TIMEOUT_MS =
+const DASHBOARD_FEEDBACK_TOTAL_TIMEOUT_MS =
   Number.isFinite(parsedFeedbackTotalTimeout) &&
   parsedFeedbackTotalTimeout > 0
     ? parsedFeedbackTotalTimeout
     : Math.max(
-        GOOGLE_FEEDBACK_TIMEOUT_MS,
-        Math.min(DASHBOARD_DEPENDENCY_TIMEOUT_MS, 4000)
+        DASHBOARD_FEEDBACK_TIMEOUT_MS,
+        Math.min(DASHBOARD_DEPENDENCY_TIMEOUT_MS, 5000)
       );
 const parsedFeedbackCacheTtl = Number(
   process.env.STORE_DASHBOARD_FEEDBACK_CACHE_TTL
@@ -208,7 +215,7 @@ async function fetchJsonWithTimeout(url, timeoutMs) {
     return await response.json();
   } catch (error) {
     if (error?.name === "AbortError") {
-      throw createTimeoutError("Google Forms feedback fetch", timeoutMs);
+      throw createTimeoutError("Store dashboard feedback fetch", timeoutMs);
     }
     throw error;
   } finally {
@@ -217,7 +224,13 @@ async function fetchJsonWithTimeout(url, timeoutMs) {
 }
 
 function normalizeFeedbackRows(json) {
-  if (!json || !json.success || !Array.isArray(json.data) || json.data.length <= 1) {
+  const isSuccess =
+    json?.success === true ||
+    String(json?.status || "")
+      .trim()
+      .toLowerCase() === "success";
+
+  if (!isSuccess || !Array.isArray(json?.data) || json.data.length <= 1) {
     return [];
   }
 
@@ -241,19 +254,27 @@ function normalizeFeedbackRows(json) {
 }
 
 async function fetchVendorFeedbacks() {
-  const endpoint = String(process.env.GOOGLE_FEEDBACK_STORE || "").trim();
+  const endpoint = String(
+    process.env.STORE_VENDOR_FEEDBACK_API_URL ||
+      process.env.VENDOR_FEEDBACK_API_URL ||
+    process.env.STORE_VENDOR_REGISTRATION_API_URL ||
+      process.env.VENDOR_REGISTRATION_API_URL ||
+      ""
+  ).trim();
+
   if (!endpoint) {
     return [];
   }
 
   const startedAt = Date.now();
-  const deadline = startedAt + GOOGLE_FEEDBACK_TOTAL_TIMEOUT_MS;
+  const deadline = startedAt + DASHBOARD_FEEDBACK_TOTAL_TIMEOUT_MS;
 
-  for (let attempt = 1; attempt <= GOOGLE_FEEDBACK_MAX_ATTEMPTS; attempt += 1) {
+  for (let attempt = 1; attempt <= DASHBOARD_FEEDBACK_MAX_ATTEMPTS; attempt += 1) {
     const remainingMs = deadline - Date.now();
+
     if (remainingMs <= 0) {
       console.warn(
-        `[store dashboard] feedback fetch skipped after exceeding ${GOOGLE_FEEDBACK_TOTAL_TIMEOUT_MS}ms total budget`
+        `[store dashboard] feedback fetch skipped after exceeding ${DASHBOARD_FEEDBACK_TOTAL_TIMEOUT_MS}ms total budget`
       );
       break;
     }
@@ -266,13 +287,13 @@ async function fetchVendorFeedbacks() {
 
       const json = await fetchJsonWithTimeout(
         url.toString(),
-        Math.min(GOOGLE_FEEDBACK_TIMEOUT_MS, remainingMs)
+        Math.min(DASHBOARD_FEEDBACK_TIMEOUT_MS, remainingMs)
       );
 
       return normalizeFeedbackRows(json);
     } catch (error) {
       console.warn(
-        `[store dashboard] feedback fetch attempt ${attempt}/${GOOGLE_FEEDBACK_MAX_ATTEMPTS} failed:`,
+        `[store dashboard] feedback fetch attempt ${attempt}/${DASHBOARD_FEEDBACK_MAX_ATTEMPTS} failed:`,
         error.message || error
       );
     }
@@ -936,11 +957,6 @@ export async function fetchDashboardReturnableStats(fromDate = null) {
 async function buildDashboardPayload() {
   const buildStartedAt = Date.now();
   const currentMonthStartDate = getCurrentMonthStartDate();
-  const googleFetchPromise = runDashboardTask(
-    "Vendor feedback",
-    fetchDashboardFeedbackRows,
-    []
-  );
 
   // Attach error handlers immediately so a PostgreSQL timeout cannot surface
   // as a detached rejection while Oracle fetches are still in progress.
@@ -1049,7 +1065,6 @@ async function buildDashboardPayload() {
     returnableDetails,
   ] = oracleData;
 
-  const vendorFeedbacks = await googleFetchPromise;
   const pendingIndents = indentBundle.pendingRows || [];
   const historyIndents = indentBundle.historyRows || [];
   const poPendingData = {
@@ -1134,7 +1149,6 @@ async function buildDashboardPayload() {
     repairPending: repairPending || [],
     repairHistory: repairHistory || [],
     returnableDetails: returnableDetails || [],
-    feedbacks: vendorFeedbacks,
   };
 
   console.log(
@@ -1182,5 +1196,15 @@ export async function fetchDashboardMetricsSnapshot() {
   }
 }
 
-
-
+export async function fetchDashboardFeedbackSnapshot() {
+  try {
+    const data = await fetchDashboardFeedbackRows();
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error(
+      "Error in fetchDashboardFeedbackSnapshot:",
+      error.message || error
+    );
+    return [];
+  }
+}

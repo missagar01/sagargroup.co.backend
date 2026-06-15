@@ -268,7 +268,7 @@ export const cacheKeys = {
     buildKey("dashboard", "po-bundle", scope),
   dashboardRepairBundle: (scope = "all") =>
     buildKey("dashboard", "repair-bundle", scope),
-  dashboardFeedbacks: () => buildKey("dashboard", "feedbacks"),
+  dashboardFeedbacks: () => buildKey("dashboard", "feedbacks-v7"),
   indentPendingPattern: () => buildPattern("indent", "pending", "*"),
   indentHistoryPattern: () => buildPattern("indent", "history", "*"),
   indentDashboard: () => buildKey("indent", "dashboard"),
