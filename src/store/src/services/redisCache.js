@@ -262,6 +262,13 @@ export const cacheKeys = {
   poHistory: (scope = "all") => buildKey("po", "history", scope),
   indentPending: (scope = "all") => buildKey("indent", "pending", scope),
   indentHistory: (scope = "all") => buildKey("indent", "history", scope),
+  dashboardIndentBundle: (scope = "all") =>
+    buildKey("dashboard", "indent-bundle", scope),
+  dashboardPoBundle: (scope = "all") =>
+    buildKey("dashboard", "po-bundle", scope),
+  dashboardRepairBundle: (scope = "all") =>
+    buildKey("dashboard", "repair-bundle", scope),
+  dashboardFeedbacks: () => buildKey("dashboard", "feedbacks"),
   indentPendingPattern: () => buildPattern("indent", "pending", "*"),
   indentHistoryPattern: () => buildPattern("indent", "history", "*"),
   indentDashboard: () => buildKey("indent", "dashboard"),

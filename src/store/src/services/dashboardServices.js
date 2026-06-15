@@ -17,12 +17,31 @@ const DASHBOARD_ORACLE_CONCURRENCY = Math.max(
   Number(process.env.STORE_DASHBOARD_ORACLE_CONCURRENCY || 4)
 );
 const userTimeout = Number(process.env.STORE_DASHBOARD_FEEDBACK_TIMEOUT_MS);
-const GOOGLE_FEEDBACK_TIMEOUT_MS = isNaN(userTimeout) || userTimeout < 10000 ? 10000 : userTimeout;
+const GOOGLE_FEEDBACK_TIMEOUT_MS =
+  isNaN(userTimeout) || userTimeout < 1000 ? 2000 : userTimeout;
 const parsedAttempts = parseInt(process.env.STORE_DASHBOARD_FEEDBACK_MAX_ATTEMPTS, 10);
 const GOOGLE_FEEDBACK_MAX_ATTEMPTS = Math.max(
   1,
-  isNaN(parsedAttempts) ? 1 : parsedAttempts
+  Math.min(3, isNaN(parsedAttempts) ? 1 : parsedAttempts)
 );
+const parsedFeedbackTotalTimeout = Number(
+  process.env.STORE_DASHBOARD_FEEDBACK_TOTAL_TIMEOUT_MS
+);
+const GOOGLE_FEEDBACK_TOTAL_TIMEOUT_MS =
+  Number.isFinite(parsedFeedbackTotalTimeout) &&
+  parsedFeedbackTotalTimeout > 0
+    ? parsedFeedbackTotalTimeout
+    : Math.max(
+        GOOGLE_FEEDBACK_TIMEOUT_MS,
+        Math.min(DASHBOARD_DEPENDENCY_TIMEOUT_MS, 4000)
+      );
+const parsedFeedbackCacheTtl = Number(
+  process.env.STORE_DASHBOARD_FEEDBACK_CACHE_TTL
+);
+const DASHBOARD_FEEDBACK_CACHE_TTL =
+  Number.isFinite(parsedFeedbackCacheTtl) && parsedFeedbackCacheTtl > 0
+    ? parsedFeedbackCacheTtl
+    : 300;
 const DASHBOARD_ORACLE_START_SQL = "TRUNC(SYSDATE, 'MM')";
 const DASHBOARD_RETURNABLE_START_SQL = "TRUNC(SYSDATE, 'MM')";
 const ORACLE_EXECUTE_OPTIONS = { outFormat: oracledb.OUT_FORMAT_OBJECT, fetchArraySize: 10000 };
@@ -227,7 +246,18 @@ async function fetchVendorFeedbacks() {
     return [];
   }
 
+  const startedAt = Date.now();
+  const deadline = startedAt + GOOGLE_FEEDBACK_TOTAL_TIMEOUT_MS;
+
   for (let attempt = 1; attempt <= GOOGLE_FEEDBACK_MAX_ATTEMPTS; attempt += 1) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      console.warn(
+        `[store dashboard] feedback fetch skipped after exceeding ${GOOGLE_FEEDBACK_TOTAL_TIMEOUT_MS}ms total budget`
+      );
+      break;
+    }
+
     try {
       const url = new URL(endpoint);
       if (attempt > 1) {
@@ -236,7 +266,7 @@ async function fetchVendorFeedbacks() {
 
       const json = await fetchJsonWithTimeout(
         url.toString(),
-        GOOGLE_FEEDBACK_TIMEOUT_MS
+        Math.min(GOOGLE_FEEDBACK_TIMEOUT_MS, remainingMs)
       );
 
       return normalizeFeedbackRows(json);
@@ -249,6 +279,38 @@ async function fetchVendorFeedbacks() {
   }
 
   return [];
+}
+
+async function fetchDashboardIndentBundle(fromDate = null) {
+  return getOrSetCache(
+    cacheKeys.dashboardIndentBundle(normalizeCacheScope(fromDate)),
+    () => fetchOracleDashboardIndentRows(fromDate),
+    DEFAULT_TTL.INDENT
+  );
+}
+
+async function fetchDashboardPoBundle(fromDate = null) {
+  return getOrSetCache(
+    cacheKeys.dashboardPoBundle(normalizeCacheScope(fromDate)),
+    () => fetchOracleDashboardPoRows(fromDate),
+    DEFAULT_TTL.PO
+  );
+}
+
+async function fetchDashboardRepairBundle(fromDate = null) {
+  return getOrSetCache(
+    cacheKeys.dashboardRepairBundle(normalizeCacheScope(fromDate)),
+    () => fetchOracleDashboardRepairRows(fromDate),
+    DEFAULT_TTL.GATE_PASS
+  );
+}
+
+async function fetchDashboardFeedbackRows() {
+  return getOrSetCache(
+    cacheKeys.dashboardFeedbacks(),
+    fetchVendorFeedbacks,
+    DASHBOARD_FEEDBACK_CACHE_TTL
+  );
 }
 
 function buildReturnableDashboardCte(fromDate = null) {
@@ -794,75 +856,39 @@ function normalizeCacheScope(fromDate) {
 }
 
 export async function fetchDashboardPendingIndents(fromDate = null) {
-  return getOrSetCache(
-    cacheKeys.indentPending(normalizeCacheScope(fromDate)),
-    async () => {
-      const result = await fetchOracleDashboardIndentRows(fromDate);
-      return result.pendingRows || [];
-    },
-    DEFAULT_TTL.INDENT
-  );
+  const result = await fetchDashboardIndentBundle(fromDate);
+  return result.pendingRows || [];
 }
 
 export async function fetchDashboardIndentHistory(fromDate = null) {
-  return getOrSetCache(
-    cacheKeys.indentHistory(normalizeCacheScope(fromDate)),
-    async () => {
-      const result = await fetchOracleDashboardIndentRows(fromDate);
-      return result.historyRows || [];
-    },
-    DEFAULT_TTL.INDENT
-  );
+  const result = await fetchDashboardIndentBundle(fromDate);
+  return result.historyRows || [];
 }
 
 export async function fetchDashboardPoPending(fromDate = null) {
-  return getOrSetCache(
-    cacheKeys.poPending(normalizeCacheScope(fromDate)),
-    async () => {
-      const result = await fetchOracleDashboardPoRows(fromDate);
-      return {
-        rows: result.pendingRows || [],
-        total: toNumber(result.pendingTotal),
-      };
-    },
-    DEFAULT_TTL.PO
-  );
+  const result = await fetchDashboardPoBundle(fromDate);
+  return {
+    rows: result.pendingRows || [],
+    total: toNumber(result.pendingTotal),
+  };
 }
 
 export async function fetchDashboardPoHistory(fromDate = null) {
-  return getOrSetCache(
-    cacheKeys.poHistory(normalizeCacheScope(fromDate)),
-    async () => {
-      const result = await fetchOracleDashboardPoRows(fromDate);
-      return {
-        rows: result.historyRows || [],
-        total: toNumber(result.historyTotal),
-      };
-    },
-    DEFAULT_TTL.PO
-  );
+  const result = await fetchDashboardPoBundle(fromDate);
+  return {
+    rows: result.historyRows || [],
+    total: toNumber(result.historyTotal),
+  };
 }
 
 export async function fetchDashboardRepairPending(fromDate = null) {
-  return getOrSetCache(
-    cacheKeys.gatePassPending(normalizeCacheScope(fromDate)),
-    async () => {
-      const result = await fetchOracleDashboardRepairRows(fromDate);
-      return result.pendingRows || [];
-    },
-    DEFAULT_TTL.GATE_PASS
-  );
+  const result = await fetchDashboardRepairBundle(fromDate);
+  return result.pendingRows || [];
 }
 
 export async function fetchDashboardRepairHistory(fromDate = null) {
-  return getOrSetCache(
-    cacheKeys.gatePassReceived(normalizeCacheScope(fromDate)),
-    async () => {
-      const result = await fetchOracleDashboardRepairRows(fromDate);
-      return result.historyRows || [];
-    },
-    DEFAULT_TTL.GATE_PASS
-  );
+  const result = await fetchDashboardRepairBundle(fromDate);
+  return result.historyRows || [];
 }
 
 export async function fetchDashboardReturnableDetails(fromDate = null) {
@@ -908,8 +934,13 @@ export async function fetchDashboardReturnableStats(fromDate = null) {
 }
 
 async function buildDashboardPayload() {
+  const buildStartedAt = Date.now();
   const currentMonthStartDate = getCurrentMonthStartDate();
-  const googleFetchPromise = fetchVendorFeedbacks();
+  const googleFetchPromise = runDashboardTask(
+    "Vendor feedback",
+    fetchDashboardFeedbackRows,
+    []
+  );
 
   // Attach error handlers immediately so a PostgreSQL timeout cannot surface
   // as a detached rejection while Oracle fetches are still in progress.
@@ -973,39 +1004,21 @@ async function buildDashboardPayload() {
       ),
     () =>
       runDashboardTask(
-        "Oracle pending indents",
-        () => fetchDashboardPendingIndents(),
-        []
+        "Oracle indent bundle",
+        () => fetchDashboardIndentBundle(),
+        { pendingRows: [], historyRows: [] }
       ),
     () =>
       runDashboardTask(
-        "Oracle history indents",
-        () => fetchDashboardIndentHistory(),
-        []
+        "Oracle purchase order bundle",
+        () => fetchDashboardPoBundle(),
+        { pendingRows: [], historyRows: [], pendingTotal: 0, historyTotal: 0 }
       ),
     () =>
       runDashboardTask(
-        "Oracle pending purchase orders",
-        () => fetchDashboardPoPending(),
-        { rows: [], total: 0 }
-      ),
-    () =>
-      runDashboardTask(
-        "Oracle purchase order history",
-        () => fetchDashboardPoHistory(),
-        { rows: [], total: 0 }
-      ),
-    () =>
-      runDashboardTask(
-        "Oracle pending repair gate passes",
-        () => fetchDashboardRepairPending(currentMonthStartDate),
-        []
-      ),
-    () =>
-      runDashboardTask(
-        "Oracle repair gate pass history",
-        () => fetchDashboardRepairHistory(currentMonthStartDate),
-        []
+        "Oracle repair gate pass bundle",
+        () => fetchDashboardRepairBundle(currentMonthStartDate),
+        { pendingRows: [], historyRows: [] }
       ),
     () =>
       runDashboardTask(
@@ -1030,16 +1043,25 @@ async function buildDashboardPayload() {
 
   const [
     indentSummary,
-    pendingIndents,
-    historyIndents,
-    poPendingData,
-    poHistoryData,
-    repairPending,
-    repairHistory,
+    indentBundle,
+    poBundle,
+    repairBundle,
     returnableDetails,
   ] = oracleData;
 
   const vendorFeedbacks = await googleFetchPromise;
+  const pendingIndents = indentBundle.pendingRows || [];
+  const historyIndents = indentBundle.historyRows || [];
+  const poPendingData = {
+    rows: poBundle.pendingRows || [],
+    total: toNumber(poBundle.pendingTotal),
+  };
+  const poHistoryData = {
+    rows: poBundle.historyRows || [],
+    total: toNumber(poBundle.historyTotal),
+  };
+  const repairPending = repairBundle.pendingRows || [];
+  const repairHistory = repairBundle.historyRows || [];
   const combinedPoRows = [
     ...(poPendingData.rows || []),
     ...(poHistoryData.rows || []),
@@ -1096,7 +1118,7 @@ async function buildDashboardPayload() {
     topVendors: buildTopVendors(combinedPoRows),
   };
 
-  return {
+  const payload = {
     tasks: tasksResult.rows || [],
     pendingCount: Number(stats.pending_count || 0),
     completedCount: Number(stats.completed_count || 0),
@@ -1114,6 +1136,12 @@ async function buildDashboardPayload() {
     returnableDetails: returnableDetails || [],
     feedbacks: vendorFeedbacks,
   };
+
+  console.log(
+    `[store dashboard] payload built in ${Date.now() - buildStartedAt}ms`
+  );
+
+  return payload;
 }
 
 export async function invalidateRepairDashboardCache() {
@@ -1153,7 +1181,6 @@ export async function fetchDashboardMetricsSnapshot() {
     return buildEmptyDashboardPayload();
   }
 }
-
 
 
 
