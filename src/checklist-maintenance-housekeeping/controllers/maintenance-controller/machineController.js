@@ -4,7 +4,6 @@ export const createMachine = async (req, res) => {
   try {
     const body = req.body;
 
-    // ✅ Parse JSON strings if needed
     let maintenanceSchedule = body.maintenance_schedule;
     if (typeof maintenanceSchedule === "string") {
       try {
@@ -14,7 +13,6 @@ export const createMachine = async (req, res) => {
       }
     }
 
-    // ✅ Prepare data for DB
     const machineData = {
       serial_no: body.serial_no || null,
       machine_name: body.machine_name || null,
@@ -42,8 +40,15 @@ export const createMachine = async (req, res) => {
       machine: newMachine,
     });
   } catch (error) {
-    console.error("❌ Machine Creation Error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
+    console.error("Machine Creation Error:", {
+      message: error.message,
+      code: error.code,
+      detail: error.detail,
+      stack: error.stack,
+    });
+    res.status(500).json({
+      error: error.detail || error.message || "Internal Server Error",
+    });
   }
 };
 
@@ -59,10 +64,10 @@ export const getMachines = async (req, res) => {
       success: true,
       data: machines,
       page,
-      nextPage: machines.length === limit ? page + 1 : null
+      nextPage: machines.length === limit ? page + 1 : null,
     });
   } catch (error) {
-    console.error("❌ Get Machines Error:", error);
+    console.error("Get Machines Error:", error);
     res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 };
