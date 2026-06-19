@@ -15,6 +15,32 @@ const isConfirmedAttachment = (value) => {
   return String(value).trim().toLowerCase() === 'confirmed';
 };
 
+const isCurrentDayTaskStartDate = (dateValue) => {
+  if (!dateValue) return false;
+  let taskDate = new Date(dateValue);
+  
+  if (Number.isNaN(taskDate.getTime()) && typeof dateValue === 'string') {
+    const parts = dateValue.split(' ');
+    if (parts.length >= 1) {
+      const dateParts = parts[0].split('/');
+      if (dateParts.length === 3) {
+        const day = parseInt(dateParts[0], 10);
+        const month = parseInt(dateParts[1], 10) - 1;
+        const year = parseInt(dateParts[2], 10);
+        taskDate = new Date(year, month, day);
+      }
+    }
+  }
+
+  if (Number.isNaN(taskDate.getTime())) return false;
+  const today = new Date();
+  return (
+    taskDate.getFullYear() === today.getFullYear() &&
+    taskDate.getMonth() === today.getMonth() &&
+    taskDate.getDate() === today.getDate()
+  );
+};
+
 const computeDelay = (start, submission) => {
   if (!start || !submission) return null;
   const startDate = new Date(start);
@@ -1086,6 +1112,10 @@ class AssignTaskRepository {
     }
     if (!existing) return null;
 
+    if (!isCurrentDayTaskStartDate(existing.task_start_date)) {
+      throw new Error('Only current day housekeeping tasks can be edited.');
+    }
+
     const submissionDate = Object.prototype.hasOwnProperty.call(input, 'submission_date')
       ? input.submission_date
       : existing.submission_date;
@@ -1163,7 +1193,10 @@ class AssignTaskRepository {
     if (useMemory) {
       return this.deleteInMemory(id);
     }
-    const result = await query('DELETE FROM assign_task WHERE id = $1', [id]);
+    const result = await query(
+      'DELETE FROM assign_task WHERE id = $1 AND DATE(task_start_date) = CURRENT_DATE',
+      [id]
+    );
     return result.rowCount > 0;
   }
 
@@ -1194,8 +1227,11 @@ class AssignTaskRepository {
     const params = [numericIds, normalized];
     const sql = `
       DELETE FROM assign_task
-      WHERE id = ANY($1::int[])
-         OR task_id = ANY($2::text[])
+      WHERE DATE(task_start_date) = CURRENT_DATE
+        AND (
+          id = ANY($1::int[])
+          OR task_id = ANY($2::text[])
+        )
     `;
     const result = await query(sql, params);
     return result.rowCount || 0;
