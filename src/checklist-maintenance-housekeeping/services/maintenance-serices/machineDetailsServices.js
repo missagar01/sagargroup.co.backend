@@ -2,8 +2,35 @@
 import { maintenancePool } from "../../config/db.js";
 
 // 🟢 Get all machines
-export const getAllMachines = async () => {
-  const result = await maintenancePool.query("SELECT * FROM form_responses ORDER BY id DESC");
+export const getAllMachines = async (filters = {}) => {
+  const { machineName, department } = filters;
+  const conditions = [];
+  const values = [];
+
+  if (machineName) {
+    values.push(machineName);
+    conditions.push(`LOWER(TRIM(machine_name)) = LOWER(TRIM($${values.length}))`);
+  }
+
+  if (department) {
+    values.push(department);
+    conditions.push(`LOWER(TRIM(department)) = LOWER(TRIM($${values.length}))`);
+  }
+
+  const whereClause = conditions.length > 0
+    ? `WHERE ${conditions.join(" AND ")}`
+    : "";
+
+  const result = await maintenancePool.query(
+    `
+      SELECT *
+      FROM form_responses
+      ${whereClause}
+      ORDER BY machine_name ASC, id DESC
+    `,
+    values
+  );
+
   return result.rows;
 };
 
