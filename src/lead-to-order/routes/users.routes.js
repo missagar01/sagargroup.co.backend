@@ -7,6 +7,7 @@ const {
   updateUserHandler,
   deleteUserHandler,
   getDepartments,
+  getGivenBy,
 } = require("../controllers/users.controller.js");
 
 const router = express.Router();
@@ -15,6 +16,7 @@ router.use(verifyToken);
 
 router.get("/", listUsers);
 router.get("/departments", getDepartments);
+router.get("/given-by", getGivenBy);
 router.get("/:id", getUser);
 router.post("/", createUserHandler);
 router.put("/:id", updateUserHandler);
