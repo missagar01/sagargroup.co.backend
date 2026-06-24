@@ -6,6 +6,7 @@ const {
   updateUser,
   deleteUser,
   fetchDepartments,
+  fetchGivenBy,
 } = require("../services/users.service.js");
 
 const ADMIN_ONLY_MESSAGE = "Admin role required to manage users.";
@@ -62,6 +63,7 @@ const createUserHandler = async (req, res) => {
     employee_id,
     page_access,
     system_access,
+    given_by,
   } = req.body;
 
   if (!user_name || !password || !department || (typeof department === 'string' && department.trim() === '')) {
@@ -93,6 +95,7 @@ const createUserHandler = async (req, res) => {
       employee_id,
       page_access,
       system_access,
+      given_by,
     });
 
     res.status(201).json({ success: true, user: newUser });
@@ -130,6 +133,7 @@ const updateUserHandler = async (req, res) => {
     "employee_id",
     "page_access",
     "system_access",
+    "given_by",
   ];
 
   const updates = {};
@@ -187,6 +191,16 @@ const getDepartments = async (req, res) => {
   }
 };
 
+const getGivenBy = async (req, res) => {
+  try {
+    const givenByList = await fetchGivenBy();
+    res.json({ success: true, data: givenByList });
+  } catch (error) {
+    console.error("Fetch given_by error:", error.message);
+    res.status(500).json({ success: false, message: "Failed to fetch given_by values" });
+  }
+};
+
 module.exports = {
   listUsers,
   getUser,
@@ -194,6 +208,7 @@ module.exports = {
   updateUserHandler,
   deleteUserHandler,
   getDepartments,
+  getGivenBy,
 };
 
 

@@ -18,5 +18,8 @@ router.get("/cost-codes", validateApiKey, chatbotController.getCostCodes);
 router.get("/employees", validateApiKey, chatbotController.getEmployees);
 router.get("/makes", validateApiKey, chatbotController.getMakes);
 router.post("/indent", validateApiKey, chatbotController.createIndent);
+router.post("/users/query", validateApiKey, chatbotController.queryUsers);
+router.post("/tasks/query", validateApiKey, chatbotController.queryTasks);
+router.post("/query", validateApiKey, chatbotController.queryGeneral);
 
 export default router;

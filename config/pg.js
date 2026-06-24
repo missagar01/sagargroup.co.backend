@@ -128,6 +128,9 @@ function attachPoolListeners(instance) {
   });
 
   instance.on("connect", (client) => {
+    client.query("SET TIME ZONE 'Asia/Kolkata'").catch((err) => {
+      console.error("[PostgreSQL] Failed to set time zone on connect:", err.message);
+    });
     client.on("error", (err) => {
       console.error("[PostgreSQL] Client connection error:", err.message || err);
       if (rawPool === instance && shouldRecyclePool(err)) {
