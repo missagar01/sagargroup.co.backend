@@ -65,10 +65,10 @@ export const getUniqueDepartments = async (req, res) => {
 export const getUniqueDivisions = async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT DISTINCT division
-      FROM users
-      WHERE division IS NOT NULL AND division <> ''
-      ORDER BY division ASC
+      SELECT division_name AS division
+      FROM checklist_divisions
+      WHERE status = 'active'
+      ORDER BY division_name ASC
     `);
     res.json(result.rows.map(r => r.division));
   } catch (e) {

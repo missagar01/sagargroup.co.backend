@@ -379,15 +379,21 @@ export const deleteUser = async (req, res) => {
  *******************************/
 export const getDepartments = async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT DISTINCT department, given_by, id, division
-      FROM users
-      WHERE department IS NOT NULL AND department <> ''
-      ORDER BY department ASC
-    `);
-
+    const { division } = req.query;
+    let query = `
+      SELECT id, department_name AS department, division_name AS division
+      FROM checklist_departments
+    `;
+    const params = [];
+    
+    if (division) {
+      query += ` WHERE LOWER(TRIM(division_name)) = LOWER(TRIM($1))`;
+      params.push(division);
+    }
+    
+    query += ` ORDER BY department_name ASC`;
+    const result = await pool.query(query, params);
     res.json(result.rows);
-
   } catch (error) {
     console.error("❌ Error fetching departments:", error);
     res.status(500).json({ error: "Database error" });
@@ -401,20 +407,13 @@ export const getDepartments = async (req, res) => {
 export const getDepartmentsOnly = async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT DISTINCT department
-      FROM users
-      WHERE department IS NOT NULL 
-        AND department <> ''
-      ORDER BY department ASC
+      SELECT DISTINCT department_name AS department
+      FROM checklist_departments
+      WHERE department_name IS NOT NULL AND department_name <> ''
+      ORDER BY department_name ASC
     `);
 
-    // Format the response
-    const departments = result.rows.map(row => ({
-      department: row.department
-    }));
-
-    res.json(departments);
-
+    res.json(result.rows);
   } catch (error) {
     console.error("❌ Error fetching unique departments:", error);
     res.status(500).json({ error: "Database error" });
@@ -428,20 +427,12 @@ export const getDepartmentsOnly = async (req, res) => {
 export const getGivenByData = async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT DISTINCT given_by
-      FROM users
-      WHERE given_by IS NOT NULL 
-        AND given_by <> ''
-      ORDER BY given_by ASC
+      SELECT id, manager_name AS given_by
+      FROM checklist_given_by
+      ORDER BY manager_name ASC
     `);
 
-    // Format the response
-    const givenByList = result.rows.map(row => ({
-      given_by: row.given_by
-    }));
-
-    res.json(givenByList);
-
+    res.json(result.rows);
   } catch (error) {
     console.error("❌ Error fetching given_by data:", error);
     res.status(500).json({ error: "Database error" });
@@ -454,137 +445,76 @@ export const getGivenByData = async (req, res) => {
  *******************************/
 export const createDepartment = async (req, res) => {
   try {
-    const { name, givenBy, division } = req.body;
+    const { name, division } = req.body;
 
-    // Validate input
     if (!name || name.trim() === "") {
       return res.status(400).json({ error: "Department name is required" });
     }
 
     const departmentName = name.trim();
-    const givenByValue = givenBy?.trim() || null;
+    const divisionName = division?.trim() || null;
 
     // Check if department already exists
     const existingDept = await pool.query(
-      `SELECT id FROM users WHERE department = $1 AND (given_by = $2 OR ($2 IS NULL AND given_by IS NULL)) AND (division = $3 OR ($3 IS NULL AND division IS NULL)) LIMIT 1`,
-      [departmentName, givenByValue, division]
+      `SELECT id FROM checklist_departments WHERE LOWER(department_name) = LOWER($1) LIMIT 1`,
+      [departmentName]
     );
 
     if (existingDept.rows.length > 0) {
-      return res.status(409).json({ error: "Department with this name and given_by already exists" });
-    }
-
-    // Create a minimal user entry for the department
-    // Set user_access to match department to keep them synchronized
-    const result = await pool.query(`
-      INSERT INTO users (
-        user_name, 
-        password, 
-        email_id, 
-        department, 
-        given_by, 
-        user_access, 
-        role, 
-        status,
-        division
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      RETURNING *
-    `, [
-      `DEPT_${departmentName}_${Date.now()}`, // Unique user_name
-      null, // No password for department entries
-      null, // No email
-      departmentName,
-      givenByValue,
-      departmentName, // Set user_access to match department
-      'user', // Default role
-      'active', // Default status
-      division
-    ]);
-
-    res.status(201).json(result.rows[0]);
-
-  } catch (error) {
-    console.error("❌ Error creating dept:", error);
-    console.error("Error details:", error.message);
-
-    // Handle specific database errors
-    if (error.code === '23505') { // Unique constraint violation
       return res.status(409).json({ error: "Department already exists" });
     }
 
+    const result = await pool.query(`
+      INSERT INTO checklist_departments (department_name, division_name)
+      VALUES ($1, $2)
+      RETURNING id, department_name AS department, division_name AS division
+    `, [departmentName, divisionName]);
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error("❌ Error creating dept:", error);
     res.status(500).json({ error: "Database error", details: error.message });
   }
 };
 
 
+/*******************************
+ * 9) UPDATE DEPARTMENT
+ *******************************/
 export const updateDepartment = async (req, res) => {
   try {
     const { id } = req.params;
-    const { department, given_by, division } = req.body;
+    const { department, division } = req.body;
 
-    // Validate input
     if (!id) {
-      return res.status(400).json({ error: "User ID is required" });
+      return res.status(400).json({ error: "Department ID is required" });
     }
 
-    if (!department && !given_by && !division) {
-      return res.status(400).json({ error: "At least department, given_by, or division must be provided" });
+    if (!department) {
+      return res.status(400).json({ error: "Department name is required" });
     }
 
-    // Build dynamic update query based on provided fields
-    const updates = [];
-    const values = [];
-    let paramIndex = 1;
-
-    if (department !== undefined && department !== null) {
-      updates.push(`department = $${paramIndex++}`);
-      values.push(department);
-    }
-
-    if (given_by !== undefined && given_by !== null) {
-      updates.push(`given_by = $${paramIndex++}`);
-      values.push(given_by);
-    }
-
-    if (division !== undefined && division !== null) {
-      updates.push(`division = $${paramIndex++}`);
-      values.push(division);
-    }
-
-    // Add user_access to match department (as they seem to be linked)
-    if (department !== undefined && department !== null) {
-      updates.push(`user_access = $${paramIndex++}`);
-      values.push(department);
-    }
-
-    // Add the ID parameter
-    values.push(id);
-
-    const query = `
-      UPDATE users 
-      SET ${updates.join(', ')}
-      WHERE id = $${paramIndex}
-      RETURNING *
-    `;
-
-    const result = await pool.query(query, values);
+    const result = await pool.query(`
+      UPDATE checklist_departments 
+      SET department_name = $1, division_name = $2
+      WHERE id = $3
+      RETURNING id, department_name AS department, division_name AS division
+    `, [department.trim(), division?.trim() || null, id]);
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({ error: "Department not found" });
     }
 
     res.json(result.rows[0]);
-
   } catch (error) {
     console.error("❌ Error updating dept:", error);
-    console.error("Error details:", error.message);
     res.status(500).json({ error: "Database error", details: error.message });
   }
 };
 
+
 /*******************************
- * DELETE DEPARTMENT
+ * 10) DELETE DEPARTMENT
  *******************************/
 export const deleteDepartment = async (req, res) => {
   try {
@@ -594,27 +524,196 @@ export const deleteDepartment = async (req, res) => {
       return res.status(400).json({ error: "Department ID is required" });
     }
 
-    // Check if department exists
-    const checkResult = await pool.query(
-      `SELECT id, department FROM users WHERE id = $1`,
-      [id]
-    );
+    const result = await pool.query(`
+      DELETE FROM checklist_departments WHERE id = $1 RETURNING *
+    `, [id]);
 
-    if (checkResult.rows.length === 0) {
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: "Department not found" });
     }
 
-    // Delete the department entry
-    await pool.query(`DELETE FROM users WHERE id = $1`, [id]);
-
     res.json({ message: "Department deleted successfully", id });
-
   } catch (error) {
     console.error("❌ Error deleting department:", error);
-    console.error("Error details:", error.message);
     res.status(500).json({ error: "Database error", details: error.message });
   }
 };
+
+
+/*******************************
+ * 11) DIVISIONS CRUD
+ *******************************/
+export const getDivisions = async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, division_name AS division, status
+      FROM checklist_divisions
+      ORDER BY division_name ASC
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    console.error("❌ Error fetching divisions:", error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+export const createDivision = async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || name.trim() === "") {
+      return res.status(400).json({ error: "Division name is required" });
+    }
+
+    const divisionName = name.trim();
+
+    const existing = await pool.query(
+      `SELECT id FROM checklist_divisions WHERE LOWER(division_name) = LOWER($1) LIMIT 1`,
+      [divisionName]
+    );
+
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: "Division already exists" });
+    }
+
+    const result = await pool.query(`
+      INSERT INTO checklist_divisions (division_name)
+      VALUES ($1)
+      RETURNING id, division_name AS division, status
+    `, [divisionName]);
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error("❌ Error creating division:", error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+export const updateDivision = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name } = req.body;
+
+    if (!id || !name || name.trim() === "") {
+      return res.status(400).json({ error: "ID and division name are required" });
+    }
+
+    const result = await pool.query(`
+      UPDATE checklist_divisions
+      SET division_name = $1
+      WHERE id = $2
+      RETURNING id, division_name AS division, status
+    `, [name.trim(), id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Division not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("❌ Error updating division:", error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+export const deleteDivision = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(`
+      DELETE FROM checklist_divisions WHERE id = $1 RETURNING *
+    `, [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Division not found" });
+    }
+
+    res.json({ message: "Division deleted successfully", id });
+  } catch (error) {
+    console.error("❌ Error deleting division:", error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+
+/*******************************
+ * 12) MANAGERS (GIVEN BY) CRUD
+ *******************************/
+export const createGivenBy = async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || name.trim() === "") {
+      return res.status(400).json({ error: "Manager name is required" });
+    }
+
+    const managerName = name.trim();
+
+    const existing = await pool.query(
+      `SELECT id FROM checklist_given_by WHERE LOWER(manager_name) = LOWER($1) LIMIT 1`,
+      [managerName]
+    );
+
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: "Manager already exists" });
+    }
+
+    const result = await pool.query(`
+      INSERT INTO checklist_given_by (manager_name)
+      VALUES ($1)
+      RETURNING id, manager_name AS given_by, status
+    `, [managerName]);
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error("❌ Error creating manager:", error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+export const updateGivenBy = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name } = req.body;
+
+    if (!id || !name || name.trim() === "") {
+      return res.status(400).json({ error: "ID and manager name are required" });
+    }
+
+    const result = await pool.query(`
+      UPDATE checklist_given_by
+      SET manager_name = $1
+      WHERE id = $2
+      RETURNING id, manager_name AS given_by, status
+    `, [name.trim(), id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Manager not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("❌ Error updating manager:", error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+export const deleteGivenBy = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(`
+      DELETE FROM checklist_given_by WHERE id = $1 RETURNING *
+    `, [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Manager not found" });
+    }
+
+    res.json({ message: "Manager deleted successfully", id });
+  } catch (error) {
+    console.error("❌ Error deleting manager:", error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+
 
 
 export const patchSystemAccess = async (req, res) => {
