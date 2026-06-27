@@ -134,7 +134,10 @@ async function resolveConnectString(config) {
     } catch (error) {
       console.warn("Store Oracle SSH tunnel initialization failed:", error.message);
 
-      if (!config.directConnectString) {
+      const isDirectLocal = config.directConnectString && 
+        (config.directConnectString.includes("127.0.0.1") || config.directConnectString.includes("localhost"));
+
+      if (!config.directConnectString || isDirectLocal) {
         throw error;
       }
 

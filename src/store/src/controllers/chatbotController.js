@@ -99,7 +99,7 @@ export const getMakes = async (req, res, next) => {
  */
 export const createIndent = async (req, res, next) => {
   try {
-    const { itemCode, qty, deptCode, series, specs, purpose, dueDate, make, userCode, costCode, empName, divCode } = req.body;
+    const { items, itemCode, qty, deptCode, series, specs, purpose, dueDate, make, userCode, costCode, empName, divCode } = req.body;
 
     const isValidText = (str) => {
       if (!str) return false;
@@ -108,14 +108,15 @@ export const createIndent = async (req, res, next) => {
       return matches && matches.length >= 2;
     };
 
-    // Basic Validations
-    if (!itemCode) return res.status(400).json({ error: 'itemCode is required.' });
-    if (!qty || isNaN(qty) || Number(qty) <= 0) return res.status(400).json({ error: 'Valid positive qty is required.' });
+    // Fallback: if items array is not provided, construct it from single item fields
+    let finalItems = items;
+    if (!Array.isArray(finalItems) || finalItems.length === 0) {
+      finalItems = [{ itemCode, qty, make, specs, purpose }];
+    }
+
+    // Basic Header Validations
     if (!deptCode) return res.status(400).json({ error: 'deptCode is required.' });
     if (!series) return res.status(400).json({ error: 'series code is required.' });
-    if (!make) return res.status(400).json({ error: 'make (makeCode) is required.' });
-    if (!isValidText(specs)) return res.status(400).json({ error: 'Valid specs (at least 2 letters/numbers, no dots/symbols) are required.' });
-    if (!isValidText(purpose)) return res.status(400).json({ error: 'Valid purpose (at least 2 letters/numbers, no dots/symbols) is required.' });
     if (!costCode) return res.status(400).json({ error: 'costCode is required.' });
 
     // Custom Validation for series I5 requiring division code
@@ -123,15 +124,26 @@ export const createIndent = async (req, res, next) => {
       return res.status(400).json({ error: 'divCode is required for series I5.' });
     }
 
+    // Item validations
+    for (const item of finalItems) {
+      if (!item.itemCode) return res.status(400).json({ error: 'itemCode is required for all items.' });
+      if (!item.qty || isNaN(item.qty) || Number(item.qty) <= 0) return res.status(400).json({ error: 'Valid positive qty is required for all items.' });
+      if (!item.make) return res.status(400).json({ error: 'make (makeCode) is required for all items.' });
+      if (!isValidText(item.specs)) return res.status(400).json({ error: 'Valid specs (at least 2 letters/numbers, no dots/symbols) are required for all items.' });
+      if (!isValidText(item.purpose)) return res.status(400).json({ error: 'Valid purpose (at least 2 letters/numbers, no dots/symbols) is required for all items.' });
+    }
+
     const result = await chatbotService.createIndent({
-      itemCode: itemCode.trim(),
-      qty: Number(qty),
+      items: finalItems.map(item => ({
+        itemCode: item.itemCode.trim(),
+        qty: Number(item.qty),
+        make: item.make ? item.make.trim() : null,
+        specs: item.specs.trim(),
+        purpose: item.purpose.trim()
+      })),
       deptCode: deptCode.trim(),
       series: series.trim(),
-      specs: specs.trim(),
-      purpose: purpose.trim(),
       dueDate,
-      make: make ? make.trim() : null,
       userCode: userCode ? userCode.trim() : 'SR002',
       costCode: costCode.trim(),
       empName: empName ? empName.trim() : '',
@@ -141,7 +153,7 @@ export const createIndent = async (req, res, next) => {
     res.status(200).json({
       success: true,
       vrNo: result.vrNo,
-      message: `Indent ${result.vrNo} raised successfully in division ${result.divCode || result.entityCode}!`
+      message: `Indent ${result.vrNo} raised successfully with ${finalItems.length} items in division ${result.divCode || result.entityCode}!`
     });
   } catch (err) {
     res.status(500).json({

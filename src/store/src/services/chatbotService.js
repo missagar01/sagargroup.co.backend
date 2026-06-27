@@ -115,11 +115,10 @@ export async function getDepartments() {
   try {
     connection = await getConnection();
     const sql = `
-      SELECT DISTINCT h.DEPT_CODE as "deptCode", NVL(d.DEPT_NAME, h.DEPT_CODE) as "deptName"
-      FROM INDENT_HEAD h
-      LEFT JOIN DEPT_MAST d ON h.DEPT_CODE = d.DEPT_CODE
-      WHERE h.DEPT_CODE IS NOT NULL
-      ORDER BY h.DEPT_CODE
+      SELECT DISTINCT DEPT_CODE as "deptCode", NVL(DEPT_NAME, DEPT_CODE) as "deptName"
+      FROM DEPT_MAST
+      WHERE DEPT_CODE IS NOT NULL
+      ORDER BY DEPT_CODE
     `;
     const result = await connection.execute(sql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
     return result.rows || [];
@@ -191,19 +190,17 @@ export async function getMakes() {
 /**
  * Create a new indent in database (Atomic Transaction)
  */
-export async function createIndent({ itemCode, qty, deptCode, series, specs, purpose, dueDate, userCode, make = null, costCode = 'CC001', empName = '', divCode = null }) {
+export async function createIndent({ items, itemCode, qty, deptCode, series, specs, purpose, dueDate, userCode, make = null, costCode = 'CC001', empName = '', divCode = null }) {
   let connection;
   try {
     connection = await getConnection();
     const finalUserCode = 'SR00113';
 
-    // 1. Fetch item UM from ITEM_MAST
-    const itemSql = `SELECT UM as "um" FROM ITEM_MAST WHERE ITEM_CODE = :itemCode`;
-    const itemResult = await connection.execute(itemSql, { itemCode }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
-    if (!itemResult.rows || itemResult.rows.length === 0) {
-      throw new Error(`Item code ${itemCode} not found in ITEM_MAST.`);
+    // Construct final list of items to support multiple item indents
+    let finalItems = items;
+    if (!Array.isArray(finalItems) || finalItems.length === 0) {
+      finalItems = [{ itemCode, qty, make, specs, purpose }];
     }
-    const um = itemResult.rows[0].um || 'NOS';
 
     // 2. Fetch series configuration to get exact entity and division
     const seriesSql = `
@@ -273,9 +270,6 @@ export async function createIndent({ itemCode, qty, deptCode, series, specs, pur
     const headSeqResult = await connection.execute(`SELECT LHSSYS_L2_TRAN_SEQ.NEXTVAL as "seq" FROM dual`);
     const headTranSeq = headSeqResult.rows[0][0];
 
-    const bodySeqResult = await connection.execute(`SELECT LHSSYS_L2_TRAN_SEQ.NEXTVAL as "seq" FROM dual`);
-    const bodyTranSeq = bodySeqResult.rows[0][0];
-
     const currentDate = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // Date without time
     const parsedDueDate = dueDate ? new Date(dueDate) : currentDate;
 
@@ -299,42 +293,57 @@ export async function createIndent({ itemCode, qty, deptCode, series, specs, pur
       headTranSeq
     }, { autoCommit: false });
 
-    // 6. Insert into INDENT_BODY
-    const bodyInsert = `
-      INSERT INTO INDENT_BODY (
-        ENTITY_CODE, TCODE, VRNO, SLNO, VRDATE, DIV_CODE, ITEM_CODE, UM, QTYINDENT, AUM, AQTYINDENT, RATE, REMARK, PURPOSE_REMARK, DUEDATE, PRIORITY_INDEX, COST_CODE, MAKE_CODE, AUMTOUM, QTYREQ, STOCK_TYPE, FC_RATE, TRAN_SEQ
-      ) VALUES (
-        :entityCode, 'I', :newVrNo, 1, :currentDate, :divCode, :itemCode, :um, :qty, :um, :qty, 1, :specs, :purpose, :parsedDueDate, 'U', :costCode, :make, 1, :qty, 'R', 1, :bodyTranSeq
-      )
-    `;
-    await connection.execute(bodyInsert, {
-      entityCode,
-      newVrNo,
-      currentDate,
-      divCode: finalDivCode,
-      itemCode,
-      um,
-      qty: Number(qty),
-      specs,
-      purpose,
-      parsedDueDate,
-      costCode,
-      make,
-      bodyTranSeq
-    }, { autoCommit: false });
+    // 6. Insert items into INDENT_BODY
+    let slno = 1;
+    for (const item of finalItems) {
+      // Fetch item UM from ITEM_MAST for each item
+      const itemSql = `SELECT UM as "um" FROM ITEM_MAST WHERE ITEM_CODE = :itemCode`;
+      const itemResult = await connection.execute(itemSql, { itemCode: item.itemCode }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      if (!itemResult.rows || itemResult.rows.length === 0) {
+        throw new Error(`Item code ${item.itemCode} not found in ITEM_MAST.`);
+      }
+      const um = itemResult.rows[0].um || 'NOS';
+
+      const bodySeqResult = await connection.execute(`SELECT LHSSYS_L2_TRAN_SEQ.NEXTVAL as "seq" FROM dual`);
+      const bodyTranSeq = bodySeqResult.rows[0][0];
+
+      const bodyInsert = `
+        INSERT INTO INDENT_BODY (
+          ENTITY_CODE, TCODE, VRNO, SLNO, VRDATE, DIV_CODE, ITEM_CODE, UM, QTYINDENT, AUM, AQTYINDENT, RATE, REMARK, PURPOSE_REMARK, DUEDATE, PRIORITY_INDEX, COST_CODE, MAKE_CODE, AUMTOUM, QTYREQ, STOCK_TYPE, FC_RATE, TRAN_SEQ
+        ) VALUES (
+          :entityCode, 'I', :newVrNo, :slno, :currentDate, :divCode, :itemCode, :um, :qty, :um, :qty, 1, :specs, :purpose, :parsedDueDate, 'U', :costCode, :make, 1, :qty, 'R', 1, :bodyTranSeq
+        )
+      `;
+      await connection.execute(bodyInsert, {
+        entityCode,
+        newVrNo,
+        slno,
+        currentDate,
+        divCode: finalDivCode,
+        itemCode: item.itemCode,
+        um,
+        qty: Number(item.qty),
+        specs: item.specs || '',
+        purpose: item.purpose || '',
+        parsedDueDate,
+        costCode,
+        make: item.make || null,
+        bodyTranSeq
+      }, { autoCommit: false });
+
+      slno++;
+    }
 
     // Commit Transaction
     await connection.commit();
-    console.log(`[chatbotService] Successfully saved indent header and body for ${newVrNo}`);
+    console.log(`[chatbotService] Successfully saved indent header and body for ${newVrNo} with ${finalItems.length} items`);
 
     return {
       success: true,
       vrNo: newVrNo,
-      itemCode,
-      qty,
       deptCode,
       entityCode,
-      divCode
+      divCode: finalDivCode
     };
 
   } catch (err) {
