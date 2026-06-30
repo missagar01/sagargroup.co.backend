@@ -155,10 +155,10 @@ export async function getEmployees() {
   try {
     connection = await getConnection();
     const sql = `
-      SELECT EMP_CODE as "empCode", TRIM(EMP_NAME) as "empName"
+      SELECT DISTINCT TRIM(PASSPORT_NO) as "empCode", TRIM(EMP_NAME) as "empName"
       FROM EMP_MAST
-      WHERE EMP_CODE IS NOT NULL AND EMP_NAME IS NOT NULL
-      ORDER BY EMP_NAME
+      WHERE PASSPORT_NO IS NOT NULL AND EMP_NAME IS NOT NULL
+      ORDER BY TRIM(EMP_NAME)
     `;
     const result = await connection.execute(sql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
     return result.rows || [];
@@ -175,10 +175,10 @@ export async function getMakes() {
   try {
     connection = await getConnection();
     const sql = `
-      SELECT MAKE_CODE as "makeCode", TRIM(MAKE_NAME) as "makeName"
+      SELECT DISTINCT MAKE_CODE as "makeCode", TRIM(MAKE_NAME) as "makeName"
       FROM MAKE_MAST
       WHERE MAKE_CODE IS NOT NULL AND MAKE_NAME IS NOT NULL
-      ORDER BY MAKE_NAME
+      ORDER BY TRIM(MAKE_NAME)
     `;
     const result = await connection.execute(sql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
     return result.rows || [];

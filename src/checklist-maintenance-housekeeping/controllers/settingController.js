@@ -362,6 +362,16 @@ export const updateUser = async (req, res) => {
 export const deleteUser = async (req, res) => {
   try {
     const { id } = req.params;
+    const { deleteTasks } = req.query;
+
+    const userRes = await pool.query(`SELECT user_name FROM users WHERE id = $1`, [id]);
+    const userName = userRes.rows[0]?.user_name;
+
+    if (deleteTasks === "true" && userName) {
+      console.log(`[deleteUser] Deleting tasks for user: ${userName}`);
+      await pool.query(`DELETE FROM checklist WHERE LOWER(name) = LOWER($1)`, [userName]);
+      await pool.query(`DELETE FROM maintenance_task_assign WHERE LOWER(doer_name) = LOWER($1)`, [userName]);
+    }
 
     await pool.query(`DELETE FROM users WHERE id = $1`, [id]);
 
@@ -369,7 +379,7 @@ export const deleteUser = async (req, res) => {
 
   } catch (error) {
     console.error("❌ Error deleting user:", error);
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ error: "Database error", message: error.message });
   }
 };
 

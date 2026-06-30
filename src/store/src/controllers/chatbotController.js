@@ -186,24 +186,22 @@ function getJwtSecret() {
  * Directly fetch accurate task counts from DB — bypasses LLM SQL generation.
  * Mirrors the exact logic in dashboardController.js countUnifiedChecklistRows.
  */
-async function getDirectTaskSummary({ username, userRole, userDept, userDiv, userDepts, targetType = "total" }) {
+async function getDirectTaskSummary({ username, userRole, userDept, userDiv, userDepts }) {
   const pg = await import("../config/postgres.js");
   const pool = pg.default;
-
-  const monthStart = `date_trunc('month', CURRENT_DATE)`;
-  const monthEnd = `CURRENT_DATE`;
 
   const isAdmin = userRole === "admin";
   const isRegularUser = userRole === "user";
 
-  const results = [];
+  let checklistCounts = { total: 0, completed: 0, pending: 0, notdone: 0, future: 0 };
+  let maintenanceCounts = { total: 0, completed: 0, pending: 0, notdone: 0, future: 0 };
+  let housekeepingCounts = { total: 0, completed: 0, pending: 0, notdone: 0, future: 0 };
 
   // ---- CHECKLIST ----
-  // Dashboard ALWAYS queries checklist regardless of system_access
   {
-    let whereClauses = [`task_start_date::date >= ${monthStart}`, `task_start_date::date <= ${monthEnd}`];
     const qParams = [];
     let pi = 1;
+    const whereClauses = [];
 
     if (isRegularUser) {
       whereClauses.push(`LOWER(name) = LOWER($${pi++})`);
@@ -213,30 +211,38 @@ async function getDirectTaskSummary({ username, userRole, userDept, userDiv, use
       qParams.push(userDept);
     }
 
-    if (targetType === "completed") {
-      whereClauses.push(`LOWER(status::text) = 'yes'`);
-    } else if (targetType === "pending_today") {
-      whereClauses = [`task_start_date::date = CURRENT_DATE`, `submission_date IS NULL`];
-      if (isRegularUser) { whereClauses.push(`LOWER(name) = LOWER($${pi++})`); qParams.push(username); }
-      else if (!isAdmin && userDept) { whereClauses.push(`LOWER(department) = LOWER($${pi++})`); qParams.push(userDept); }
-    } else if (targetType === "notdone") {
-      whereClauses.push(`LOWER(status::text) = 'no'`);
-    }
-
+    const whereStr = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+    const sql = `
+      SELECT
+        COUNT(CASE WHEN task_start_date::date >= date_trunc('month', CURRENT_DATE) AND task_start_date::date <= CURRENT_DATE THEN 1 END) as total,
+        COUNT(CASE WHEN task_start_date::date >= date_trunc('month', CURRENT_DATE) AND submission_date IS NOT NULL AND LOWER(status::text) = 'yes' THEN 1 END) as completed,
+        COUNT(CASE WHEN task_start_date::date >= date_trunc('month', CURRENT_DATE) AND task_start_date::date <= CURRENT_DATE AND submission_date IS NULL THEN 1 END) as pending,
+        COUNT(CASE WHEN task_start_date::date >= date_trunc('month', CURRENT_DATE) AND submission_date IS NOT NULL AND LOWER(status::text) = 'no' THEN 1 END) as notdone,
+        COUNT(CASE WHEN task_start_date::date = CURRENT_DATE + 1 THEN 1 END) as future
+      FROM checklist
+      ${whereStr}
+    `;
     try {
-      const r = await pool.query(`SELECT COUNT(*) AS count FROM checklist WHERE ${whereClauses.join(" AND ")}`, qParams);
-      results.push({ module: "Checklist", count: Number(r.rows[0]?.count || 0) });
+      const r = await pool.query(sql, qParams);
+      if (r.rows[0]) {
+        checklistCounts = {
+          total: Number(r.rows[0].total || 0),
+          completed: Number(r.rows[0].completed || 0),
+          pending: Number(r.rows[0].pending || 0),
+          notdone: Number(r.rows[0].notdone || 0),
+          future: Number(r.rows[0].future || 0)
+        };
+      }
     } catch (e) {
-      console.error("chatbot checklist count error:", e.message);
-      results.push({ module: "Checklist", count: 0 });
+      console.error("chatbot checklist summary error:", e.message);
     }
   }
 
   // ---- MAINTENANCE ----
   {
-    let whereClauses = [`task_start_date::date >= ${monthStart}`, `task_start_date::date <= ${monthEnd}`];
     const qParams = [];
     let pi = 1;
+    const whereClauses = [];
 
     if (isRegularUser) {
       whereClauses.push(`LOWER(doer_name) = LOWER($${pi++})`);
@@ -246,61 +252,96 @@ async function getDirectTaskSummary({ username, userRole, userDept, userDiv, use
       qParams.push(userDept);
     }
 
-    if (targetType === "completed") {
-      whereClauses.push(`LOWER(task_status) = 'yes'`);
-      whereClauses.push(`actual_date IS NOT NULL`);
-    } else if (targetType === "pending_today") {
-      whereClauses = [`task_start_date::date = CURRENT_DATE`, `actual_date IS NULL`];
-      if (isRegularUser) { whereClauses.push(`LOWER(doer_name) = LOWER($${pi++})`); qParams.push(username); }
-      else if (!isAdmin && userDept) { whereClauses.push(`LOWER(COALESCE(doer_department, machine_department)) = LOWER($${pi++})`); qParams.push(userDept); }
-    } else if (targetType === "notdone") {
-      whereClauses.push(`LOWER(task_status) = 'no'`);
-    }
-
+    const whereStr = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+    const sql = `
+      SELECT
+        COUNT(CASE WHEN task_start_date::date >= date_trunc('month', CURRENT_DATE) AND task_start_date::date <= CURRENT_DATE THEN 1 END) as total,
+        COUNT(CASE WHEN task_start_date::date >= date_trunc('month', CURRENT_DATE) AND actual_date IS NOT NULL AND LOWER(task_status::text) = 'yes' THEN 1 END) as completed,
+        COUNT(CASE WHEN task_start_date::date >= date_trunc('month', CURRENT_DATE) AND task_start_date::date <= CURRENT_DATE AND actual_date IS NULL THEN 1 END) as pending,
+        COUNT(CASE WHEN task_start_date::date >= date_trunc('month', CURRENT_DATE) AND actual_date IS NOT NULL AND LOWER(task_status::text) = 'no' THEN 1 END) as notdone,
+        COUNT(CASE WHEN task_start_date::date = CURRENT_DATE + 1 THEN 1 END) as future
+      FROM maintenance_task_assign
+      ${whereStr}
+    `;
     try {
-      const r = await pool.query(`SELECT COUNT(*) AS count FROM maintenance_task_assign WHERE ${whereClauses.join(" AND ")}`, qParams);
-      results.push({ module: "Maintenance", count: Number(r.rows[0]?.count || 0) });
+      const r = await pool.query(sql, qParams);
+      if (r.rows[0]) {
+        maintenanceCounts = {
+          total: Number(r.rows[0].total || 0),
+          completed: Number(r.rows[0].completed || 0),
+          pending: Number(r.rows[0].pending || 0),
+          notdone: Number(r.rows[0].notdone || 0),
+          future: Number(r.rows[0].future || 0)
+        };
+      }
     } catch (e) {
-      console.error("chatbot maintenance count error:", e.message);
-      results.push({ module: "Maintenance", count: 0 });
+      console.error("chatbot maintenance summary error:", e.message);
     }
   }
 
   // ---- HOUSEKEEPING ----
   {
-    let whereClauses = [`task_start_date::date >= ${monthStart}`, `task_start_date::date <= ${monthEnd}`];
     const qParams = [];
     let pi = 1;
+    const whereClauses = [];
 
     if (isRegularUser) {
       whereClauses.push(`LOWER(name) = LOWER($${pi++})`);
       qParams.push(username);
-    } else if (!isAdmin && userDepts.length > 0) {
+    } else if (!isAdmin && userDepts && userDepts.length > 0) {
       const placeholders = userDepts.map((_, i) => `$${pi + i}`).join(", ");
       whereClauses.push(`LOWER(department) = ANY(ARRAY[${placeholders}])`);
       qParams.push(...userDepts);
       pi += userDepts.length;
     }
 
-    if (targetType === "completed") {
-      whereClauses.push(`LOWER(status::text) = 'yes'`);
-    } else if (targetType === "pending_today") {
-      whereClauses = [`task_start_date::date = CURRENT_DATE`, `submission_date IS NULL`];
-      if (isRegularUser) { whereClauses.push(`LOWER(name) = LOWER($${pi++})`); qParams.push(username); }
-    } else if (targetType === "notdone") {
-      whereClauses.push(`LOWER(status::text) = 'no'`);
-    }
-
+    const whereStr = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+    const sql = `
+      SELECT
+        COUNT(CASE WHEN task_start_date::date >= date_trunc('month', CURRENT_DATE) AND task_start_date::date <= CURRENT_DATE THEN 1 END) as total,
+        COUNT(CASE WHEN task_start_date::date >= date_trunc('month', CURRENT_DATE) AND submission_date IS NOT NULL AND LOWER(status::text) = 'yes' THEN 1 END) as completed,
+        COUNT(CASE WHEN task_start_date::date >= date_trunc('month', CURRENT_DATE) AND task_start_date::date <= CURRENT_DATE AND submission_date IS NULL THEN 1 END) as pending,
+        COUNT(CASE WHEN task_start_date::date >= date_trunc('month', CURRENT_DATE) AND submission_date IS NOT NULL AND LOWER(status::text) = 'no' THEN 1 END) as notdone,
+        COUNT(CASE WHEN task_start_date::date = CURRENT_DATE + 1 THEN 1 END) as future
+      FROM assign_task
+      ${whereStr}
+    `;
     try {
-      const r = await pool.query(`SELECT COUNT(*) AS count FROM assign_task WHERE ${whereClauses.join(" AND ")}`, qParams);
-      results.push({ module: "Housekeeping", count: Number(r.rows[0]?.count || 0) });
+      const r = await pool.query(sql, qParams);
+      if (r.rows[0]) {
+        housekeepingCounts = {
+          total: Number(r.rows[0].total || 0),
+          completed: Number(r.rows[0].completed || 0),
+          pending: Number(r.rows[0].pending || 0),
+          notdone: Number(r.rows[0].notdone || 0),
+          future: Number(r.rows[0].future || 0)
+        };
+      }
     } catch (e) {
-      console.error("chatbot housekeeping count error:", e.message);
-      results.push({ module: "Housekeeping", count: 0 });
+      console.error("chatbot housekeeping summary error:", e.message);
     }
   }
 
-  return results;
+  const totalSum = checklistCounts.total + maintenanceCounts.total + housekeepingCounts.total;
+  const completedSum = checklistCounts.completed + maintenanceCounts.completed + housekeepingCounts.completed;
+  const pendingSum = checklistCounts.pending + maintenanceCounts.pending + housekeepingCounts.pending;
+  const notdoneSum = checklistCounts.notdone + maintenanceCounts.notdone + housekeepingCounts.notdone;
+  const futureSum = checklistCounts.future + maintenanceCounts.future + housekeepingCounts.future;
+
+  return {
+    breakdown: [
+      { module: "Total Tasks (aaj tak)", count: totalSum },
+      { module: "Completed", count: completedSum },
+      { module: "Pending", count: pendingSum },
+      { module: "Not Done", count: notdoneSum },
+      { module: "Future Tasks (Tomorrow)", count: futureSum }
+    ],
+    totalSum,
+    completedSum,
+    pendingSum,
+    notdoneSum,
+    futureSum
+  };
 }
 
 /**
@@ -308,7 +349,26 @@ async function getDirectTaskSummary({ username, userRole, userDept, userDiv, use
  */
 function detectTaskSummaryIntent(text) {
   const t = text.toLowerCase();
-  // Patterns for "how many tasks", "kitne tasks", "task count", "checklist status", "mera status"
+  
+  // Completed patterns
+  const completedPatterns = [
+    /kitne\s+complete/,
+    /completed\s+tasks?\s+count/,
+    /kितने\s+complete/,
+    /how\s+many.*complet/,
+    /kaam\s+pur[aā]/,
+  ];
+
+  // Pending patterns
+  const pendingPatterns = [
+    /pending\s+tasks?/,
+    /aaj\s+ke\s+pending/,
+    /today.*pending/,
+    /kitne\s+pending/,
+    /baaki\s+kaam/,
+  ];
+
+  // Total / General summary patterns
   const totalPatterns = [
     /kitne\s+tasks?\s+(hain|hai|he)/,
     /how\s+many\s+tasks?/,
@@ -321,20 +381,26 @@ function detectTaskSummaryIntent(text) {
     /total\s+tasks?\s+this\s+month/,
     /monthly\s+tasks?\s+count/,
     /is\s+month.*kitne/,
-  ];
-  const completedPatterns = [
-    /kitne\s+complete/,
-    /completed\s+tasks?\s+count/,
-    /kितने\s+complete/,
-    /how\s+many.*complet/,
-    /kaam\s+pur[aā]/,
-  ];
-  const pendingPatterns = [
-    /pending\s+tasks?/,
-    /aaj\s+ke\s+pending/,
-    /today.*pending/,
-    /kitne\s+pending/,
-    /baaki\s+kaam/,
+    /tasks?\s+ke\s+baare\s+me/,
+    /tasks?\s+summary/,
+    /kaam\s+ke\s+baare\s+me/,
+    /checklist\s+summary/,
+    /tasks?\s+information/,
+    /tasks?\s+info/,
+    /status/,
+    /summary/,
+    /task/,
+    /tasks/,
+    /checklist/,
+    /completed/,
+    /pending/,
+    /not\s+done/,
+    /future/,
+    /tomorrow/,
+    /incomplete/,
+    /aaj\s+tak/,
+    /aaj\s+ke/,
+    /details/,
   ];
 
   if (completedPatterns.some(p => p.test(t))) return "completed";
@@ -416,7 +482,7 @@ async function getDirectTaskList({ username, userRole, userDept, userDepts, date
           COALESCE(frequency, '')::text AS frequency,
           COALESCE(status::text, 'no')::text AS status,
           submission_date::text AS completed_at,
-          COALESCE(delay, '')::text AS delay,
+          COALESCE(delay::text, '')::text AS delay,
           task_start_date::text AS task_start_date
         FROM checklist
         WHERE ${whereClauses.join(" AND ")}
@@ -460,7 +526,7 @@ async function getDirectTaskList({ username, userRole, userDept, userDepts, date
           COALESCE(frequency, '')::text AS frequency,
           COALESCE(task_status::text, 'no')::text AS status,
           actual_date::text AS completed_at,
-          COALESCE(delay, '')::text AS delay,
+          COALESCE(delay::text, '')::text AS delay,
           task_start_date::text AS task_start_date
         FROM maintenance_task_assign
         WHERE ${whereClauses.join(" AND ")}
@@ -505,7 +571,7 @@ async function getDirectTaskList({ username, userRole, userDept, userDepts, date
           COALESCE(frequency, '')::text AS frequency,
           COALESCE(status::text, 'no')::text AS status,
           submission_date::text AS completed_at,
-          COALESCE(delay, '')::text AS delay,
+          COALESCE(delay::text, '')::text AS delay,
           task_start_date::text AS task_start_date
         FROM assign_task
         WHERE ${whereClauses.join(" AND ")}
@@ -562,57 +628,6 @@ export const queryGeneral = async (req, res, next) => {
     const userAccess1 = decodedUser.user_access1 || "";
     const userDepts = userAccess1.split(",").map(d => d.trim().toLowerCase()).filter(Boolean);
 
-    // ─── DIRECT TASK SUMMARY SHORTCUT ───────────────────────────────────────
-    // If user is asking about task counts, bypass LLM SQL generation entirely.
-    // This guarantees numbers match the dashboard 100%.
-    const summaryType = detectTaskSummaryIntent(queryText);
-    if (summaryType) {
-      try {
-        const breakdown = await getDirectTaskSummary({
-          username, userRole, userDept, userDiv, userDepts,
-          targetType: summaryType
-        });
-
-        const total = breakdown.reduce((a, b) => a + b.count, 0);
-
-        const kolkataDate2 = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-        const currentDateStr2 = kolkataDate2.toLocaleDateString("en-CA");
-
-        const labelMap = {
-          total: "is mahine ke kul (total)",
-          completed: "is mahine complete hue",
-          pending_today: "aaj ke pending",
-          notdone: "is mahine incomplete"
-        };
-
-        const summaryRows = breakdown.map(b =>
-          `<tr><td><strong>${b.module}</strong></td><td>${b.count}</td></tr>`
-        ).join("");
-
-        const summaryMessage = `
-<p>Namaste <strong>${username}</strong>! Aapke <strong>${labelMap[summaryType] || "is mahine ke"}</strong> tasks ka summary ${currentDateStr2} tak:</p>
-<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
-  <thead><tr><th>Module</th><th>Count</th></tr></thead>
-  <tbody>${summaryRows}</tbody>
-  <tfoot><tr><td><strong>Total</strong></td><td><strong>${total}</strong></td></tr></tfoot>
-</table>
-<br/>Agar kisi specific module ya date range ke baare mein jaanna chahte hain, toh zaroor poochhen!`;
-
-        return res.status(200).json({
-          success: true,
-          resultType: "tasksCountBreakdown",
-          isCount: true,
-          breakdown,
-          countType: summaryType,          // "total" | "completed" | "pending_today" | "notdone"
-          totalNotDone: total,
-          message: summaryMessage
-        });
-      } catch (directErr) {
-        console.error("Direct task summary error:", directErr.message);
-        // Fall through to normal OpenAI flow on error
-      }
-    }
-
     // ─── DIRECT TASK LIST SHORTCUT ───────────────────────────────────────────
     // If user asks for a list of today's tasks, bypass LLM SQL to avoid UNION type errors.
     const listFilter = detectTaskListIntent(queryText);
@@ -656,6 +671,56 @@ export const queryGeneral = async (req, res, next) => {
         });
       } catch (listErr) {
         console.error("Direct task list error:", listErr.message);
+        // Fall through to normal OpenAI flow on error
+      }
+    }
+
+    // ─── DIRECT TASK SUMMARY SHORTCUT ───────────────────────────────────────
+    // If user is asking about task counts, bypass LLM SQL generation entirely.
+    // This guarantees numbers match the dashboard 100%.
+    const summaryType = detectTaskSummaryIntent(queryText);
+    if (summaryType) {
+      try {
+        const result = await getDirectTaskSummary({
+          username, userRole, userDept, userDiv, userDepts
+        });
+        const { breakdown, totalSum, completedSum, pendingSum, notdoneSum, futureSum } = result;
+
+        const kolkataDate2 = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+        const currentDateStr2 = kolkataDate2.toLocaleDateString("en-CA");
+
+        let total = totalSum;
+        if (summaryType === "completed") {
+          total = completedSum;
+        } else if (summaryType === "pending_today") {
+          total = pendingSum;
+        } else if (summaryType === "notdone") {
+          total = notdoneSum;
+        }
+
+        const summaryRows = breakdown.map(b =>
+          `<tr><td><strong>${b.module}</strong></td><td>${b.count}</td></tr>`
+        ).join("");
+
+        const summaryMessage = `
+<p>Namaste <strong>${username}</strong>! Aapke tasks ka summary (${currentDateStr2} tak):</p>
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
+  <thead><tr><th>Status Category</th><th>Count</th></tr></thead>
+  <tbody>${summaryRows}</tbody>
+</table>
+<br/>Agar kisi specific module ya date range ke baare mein jaanna chahte hain, toh zaroor poochhen!`;
+
+        return res.status(200).json({
+          success: true,
+          resultType: "tasksCountBreakdown",
+          isCount: true,
+          breakdown,
+          countType: summaryType,          // "total" | "completed" | "pending_today" | "notdone"
+          totalNotDone: total,
+          message: summaryMessage
+        });
+      } catch (directErr) {
+        console.error("Direct task summary error:", directErr.message);
         // Fall through to normal OpenAI flow on error
       }
     }
@@ -1031,7 +1096,12 @@ Do not output raw json or markdown code. Just output clean HTML message.`;
         resPayload.summary = Object.values(summaryMap);
         resPayload.targetDate = dbRows[0]?.task_start_date || currentDateStr;
       } else if (resultType === "tasksSummary") {
-        resPayload.summary = dbRows;
+        resPayload.summary = dbRows.map(r => ({
+          module: r.module || r.source || "Checklist",
+          total: Number(r.total || r.total_tasks || r.count || 0),
+          completed: Number(r.completed || r.completed_tasks || 0),
+          pending: Number(r.pending || r.pending_tasks || r.count || 0)
+        }));
         resPayload.targetDate = currentDateStr;
       } else if (resultType === "taskDiagnostic") {
         const latestRow = dbRows[0];
