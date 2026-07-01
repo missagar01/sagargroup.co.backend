@@ -17,19 +17,21 @@ const isConfirmedAttachment = (value) => {
 
 const isCurrentDayTaskStartDate = (dateValue) => {
   if (!dateValue) return false;
-  let taskDate = new Date(dateValue);
   
-  if (Number.isNaN(taskDate.getTime()) && typeof dateValue === 'string') {
+  let taskDate;
+  if (typeof dateValue === 'string' && dateValue.includes('/')) {
     const parts = dateValue.split(' ');
-    if (parts.length >= 1) {
-      const dateParts = parts[0].split('/');
-      if (dateParts.length === 3) {
-        const day = parseInt(dateParts[0], 10);
-        const month = parseInt(dateParts[1], 10) - 1;
-        const year = parseInt(dateParts[2], 10);
-        taskDate = new Date(year, month, day);
-      }
+    const dateParts = parts[0].split('/');
+    if (dateParts.length === 3) {
+      const day = parseInt(dateParts[0], 10);
+      const month = parseInt(dateParts[1], 10) - 1;
+      const year = parseInt(dateParts[2], 10);
+      taskDate = new Date(year, month, day);
     }
+  }
+
+  if (!taskDate || Number.isNaN(taskDate.getTime())) {
+    taskDate = new Date(dateValue);
   }
 
   if (Number.isNaN(taskDate.getTime())) return false;
