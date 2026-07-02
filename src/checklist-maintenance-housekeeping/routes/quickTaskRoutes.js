@@ -11,7 +11,8 @@ import {
   updateChecklistTask,
   updateDelegationTask,
   updateMaintenanceTask,
-  fetchUsers
+  fetchUsers,
+  fetchDepartments
 } from "../controllers/quickTaskController.js";
 
 const router = express.Router();
@@ -162,6 +163,11 @@ router.post("/update-maintenance", async (req, res) => {
 
 router.get("/users", async (req, res) => {
   const result = await fetchUsers();
+  res.json(result);
+});
+
+router.get("/departments", async (req, res) => {
+  const result = await fetchDepartments();
   res.json(result);
 });
 

@@ -237,7 +237,7 @@ export const fetchHousekeeping = async (
     }
 
     if (nameFilter) {
-      filters.push(`LOWER(name) = LOWER($${paramIndex++})`);
+      filters.push(`LOWER(department) = LOWER($${paramIndex++})`);
       params.push(nameFilter);
     }
 
@@ -699,26 +699,70 @@ export const updateMaintenanceTask = async (updatedTask) => {
 // ------------------------ FETCH USERS (UNIQUE NAMES) ------------------------
 export const fetchUsers = async () => {
   try {
+    const checklistSql = `
+      SELECT DISTINCT name FROM checklist WHERE name IS NOT NULL AND name <> ''
+    `;
+    const delegationSql = `
+      SELECT DISTINCT name FROM delegation WHERE name IS NOT NULL AND name <> ''
+    `;
+    const maintenanceSql = `
+      SELECT DISTINCT doer_name AS name FROM maintenance_task_assign WHERE doer_name IS NOT NULL AND doer_name <> ''
+    `;
+    const housekeepingSql = `
+      SELECT DISTINCT department AS name FROM assign_task WHERE department IS NOT NULL AND department <> ''
+    `;
+
+    const [checklistRes, delegationRes, maintenanceRes, housekeepingRes] = await Promise.all([
+      pool.query(checklistSql),
+      pool.query(delegationSql),
+      maintenancePool.query(maintenanceSql),
+      housekeepingPool ? housekeepingPool.query(housekeepingSql) : Promise.resolve({ rows: [] }),
+    ]);
+
+    const checklistNames = checklistRes.rows.map(r => typeof r?.name === "string" ? r.name.trim() : "").filter(Boolean).sort((a, b) => a.localeCompare(b));
+    const delegationNames = delegationRes.rows.map(r => typeof r?.name === "string" ? r.name.trim() : "").filter(Boolean).sort((a, b) => a.localeCompare(b));
+    const maintenanceDoers = maintenanceRes.rows.map(r => typeof r?.name === "string" ? r.name.trim() : "").filter(Boolean).sort((a, b) => a.localeCompare(b));
+    const housekeepingDepartments = housekeepingRes.rows.map(r => typeof r?.name === "string" ? r.name.trim() : "").filter(Boolean).sort((a, b) => a.localeCompare(b));
+
+    return {
+      checklistNames,
+      delegationNames,
+      maintenanceDoers,
+      housekeepingDepartments
+    };
+  } catch (err) {
+    console.error("Error in fetchUsers:", err);
+    return {
+      checklistNames: [],
+      delegationNames: [],
+      maintenanceDoers: [],
+      housekeepingDepartments: []
+    };
+  }
+};
+
+export const fetchDepartments = async () => {
+  try {
     const checklistAndDelegationSql = `
-      SELECT name
-      FROM (
-        SELECT DISTINCT name FROM checklist WHERE name IS NOT NULL AND name <> ''
-        UNION
-        SELECT DISTINCT name FROM delegation WHERE name IS NOT NULL AND name <> ''
-      ) t
-      ORDER BY LOWER(name)
+      SELECT DISTINCT department 
+      FROM checklist 
+      WHERE department IS NOT NULL AND department <> ''
+      UNION
+      SELECT DISTINCT department 
+      FROM delegation 
+      WHERE department IS NOT NULL AND department <> ''
     `;
 
     const maintenanceSql = `
-      SELECT DISTINCT doer_name AS name
-      FROM maintenance_task_assign
-      WHERE doer_name IS NOT NULL AND doer_name <> ''
+      SELECT DISTINCT department 
+      FROM maintenance_task_assign 
+      WHERE department IS NOT NULL AND department <> ''
     `;
 
     const housekeepingSql = `
-      SELECT DISTINCT name
-      FROM assign_task
-      WHERE name IS NOT NULL AND name <> ''
+      SELECT DISTINCT department 
+      FROM assign_task 
+      WHERE department IS NOT NULL AND department <> ''
     `;
 
     const [mainResult, maintenanceResult, housekeepingResult] = await Promise.all([
@@ -727,17 +771,18 @@ export const fetchUsers = async () => {
       housekeepingPool ? housekeepingPool.query(housekeepingSql) : Promise.resolve({ rows: [] }),
     ]);
 
-    const mergedNames = [...new Set(
+    const mergedDepts = [...new Set(
       [...mainResult.rows, ...maintenanceResult.rows, ...housekeepingResult.rows]
-        .map((row) => (typeof row?.name === "string" ? row.name.trim() : ""))
+        .map((row) => (typeof row?.department === "string" ? row.department.trim() : ""))
         .filter(Boolean)
     )].sort((left, right) => left.localeCompare(right));
 
-    return mergedNames.map((name) => ({ user_name: name }));
+    return mergedDepts.map((d) => ({ department: d }));
   } catch (err) {
-    console.log(err);
+    console.error("Error in fetchDepartments:", err);
     return [];
   }
 };
+
 
 

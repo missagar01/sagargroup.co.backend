@@ -954,7 +954,7 @@ Keep SQL queries clean, optimal, and strictly read-only SELECT. Always select ex
       console.error("OpenAI Call 1 error:", err.message);
       return res.status(200).json({
         success: false,
-        error: "OpenAI context lookup failed. Please try again."
+        error: "कुछ टेक्निकल खराबी के वजह से मैं response देने में असमर्थ हूँ।"
       });
     }
 
@@ -1010,7 +1010,7 @@ Keep SQL queries clean, optimal, and strictly read-only SELECT. Always select ex
         console.error("SQL tried:", sql, "Params:", params);
         return res.status(200).json({
           success: false,
-          error: "डेटाबेस क्वेरी निष्पादित करते समय त्रुटि हुई। (Error executing query in database: " + dbErr.message + ")"
+          error: "कुछ टेक्निकल खराबी के वजह से मैं response देने में असमर्थ हूँ।"
         });
       }
 
@@ -1132,11 +1132,15 @@ Do not output raw json or markdown code. Just output clean HTML message.`;
 
     return res.status(200).json({
       success: false,
-      error: "Unable to parse intent."
+      error: "कुछ टेक्निकल खराबी के वजह से मैं response देने में असमर्थ हूँ।"
     });
 
   } catch (err) {
-    next(err);
+    console.error("Chatbot queryGeneral error:", err.message);
+    return res.status(200).json({
+      success: false,
+      error: "कुछ टेक्निकल खराबी के वजह से मैं response देने में असमर्थ हूँ।"
+    });
   }
 };
 
