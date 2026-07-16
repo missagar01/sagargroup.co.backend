@@ -14,6 +14,7 @@ router.get("/items", validateApiKey, chatbotController.searchItems);
 router.get("/stock/:itemCode", validateApiKey, chatbotController.getItemStock);
 router.get("/series", validateApiKey, chatbotController.getIndentSeries);
 router.get("/departments", validateApiKey, chatbotController.getDepartments);
+router.get("/task-departments", validateApiKey, chatbotController.getTaskDepartments);
 router.get("/cost-codes", validateApiKey, chatbotController.getCostCodes);
 router.get("/employees", validateApiKey, chatbotController.getEmployees);
 router.get("/makes", validateApiKey, chatbotController.getMakes);
