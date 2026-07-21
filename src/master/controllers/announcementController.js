@@ -1,5 +1,51 @@
 import announcementService from "../services/announcementService.js";
 
+const normalizeAccessKey = (value) =>
+    String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "");
+
+const parseDelimitedAccess = (value) => {
+    if (!value || typeof value !== "string") {
+        return [];
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return [];
+    }
+
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) {
+                return parsed
+                    .map((entry) => (typeof entry === "string" ? entry.trim() : String(entry).trim()))
+                    .filter(Boolean);
+            }
+        } catch {
+            // Fall back to comma-separated parsing.
+        }
+    }
+
+    return trimmed
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+};
+
+const hasAnnouncementPageAccess = (user) => {
+    const pageAccess = new Set(
+        parseDelimitedAccess(user?.page_access).map((entry) => normalizeAccessKey(entry))
+    );
+
+    return (
+        pageAccess.has(normalizeAccessKey("Announcements")) ||
+        pageAccess.has(normalizeAccessKey("/checklist/announcements"))
+    );
+};
+
 export const createAnnouncement = async (req, res, next) => {
     try {
         const { title, message, start_date, end_date, is_active, priority } = req.body;
@@ -30,8 +76,9 @@ export const getAnnouncements = async (req, res, next) => {
     try {
         const authUser = req.user;
         const isAdmin = authUser?.role === "admin" || authUser?.user_name === "admin";
+        const canViewFullAnnouncementList = isAdmin || hasAnnouncementPageAccess(authUser);
 
-        const data = isAdmin
+        const data = canViewFullAnnouncementList
             ? await announcementService.getAllAnnouncementsAdmin()
             : await announcementService.getAllAnnouncements();
 
