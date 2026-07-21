@@ -10,12 +10,14 @@ async function buildMasterRouter() {
     userRoutesMod,
     userScoreRoutesMod,
     attendenceRoutesMod,
+    announcementRoutesMod,
   ] = await Promise.all([
     import("./routes/dashboardRoutes.js"),
     import("./routes/settingRoutes.js"),
     import("./routes/userRoutes.js"),
     import("./routes/userScoreRoutes.js"),
     import("./routes/attendenceRoutes.js"),
+    import("./routes/announcementRoutes.js"),
   ]);
 
   const dashboardRoutes = dashboardRoutesMod.default;
@@ -23,6 +25,7 @@ async function buildMasterRouter() {
   const userRoutes = userRoutesMod.default;
   const userScoreRoutes = userScoreRoutesMod.default;
   const attendenceRoutes = attendenceRoutesMod.default;
+  const announcementRoutes = announcementRoutesMod.default;
 
   const mountedRouter = express.Router();
 
@@ -40,6 +43,7 @@ async function buildMasterRouter() {
   mountedRouter.use("/users", userRoutes);
   mountedRouter.use("/user-score", userScoreRoutes);
   mountedRouter.use("/attendence", attendenceRoutes);
+  mountedRouter.use("/announcements", announcementRoutes);
 
   return mountedRouter;
 }
