@@ -50,8 +50,8 @@ const getAllAnnouncements = async () => {
         SELECT ${COLUMNS}
         FROM announcements
         WHERE is_active = TRUE
-          AND start_date <= CURRENT_TIMESTAMP
-          AND end_date >= CURRENT_TIMESTAMP
+          AND (start_date IS NULL OR start_date <= CURRENT_TIMESTAMP)
+          AND (end_date IS NULL OR end_date >= CURRENT_TIMESTAMP)
         ORDER BY priority DESC, id DESC
         `
     );
