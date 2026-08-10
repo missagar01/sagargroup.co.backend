@@ -113,10 +113,42 @@ async function upsertPaymentStatus({ vrno, payment_status, remarks, updated_by }
   return result.rows[0];
 }
 
+async function bulkUpsertPaymentStatus({ vrnos, payment_status, remarks, updated_by }) {
+  if (!PAYMENT_STATUSES.includes(payment_status)) {
+    const err = new Error(`Invalid payment_status "${payment_status}"`);
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!Array.isArray(vrnos) || !vrnos.length) {
+    const err = new Error("vrnos must be a non-empty array");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const query = `
+    INSERT INTO invoice_payment_followup (vrno, payment_status, remarks, updated_by, updated_at)
+    SELECT unnest($1::text[]), $2, $3, $4, NOW()
+    ON CONFLICT (vrno) DO UPDATE SET
+      payment_status = EXCLUDED.payment_status,
+      remarks = EXCLUDED.remarks,
+      updated_by = EXCLUDED.updated_by,
+      updated_at = NOW()
+    RETURNING *
+  `;
+  const result = await pgQuery(query, [
+    vrnos,
+    payment_status,
+    remarks ?? null,
+    updated_by ?? null,
+  ]);
+  return result.rows;
+}
+
 module.exports = {
   PAYMENT_STATUSES,
   getInvoicePaymentFollowup,
   upsertPaymentStatus,
+  bulkUpsertPaymentStatus,
 };
 
 

@@ -38,7 +38,25 @@ async function updateStatus(req, res) {
   }
 }
 
+async function bulkUpdateStatus(req, res) {
+  try {
+    const { vrnos, payment_status, remarks } = req.body;
+    const { user_name, username } = req.user;
+
+    const updated = await paymentFollowupService.bulkUpsertPaymentStatus({
+      vrnos,
+      payment_status,
+      remarks,
+      updated_by: user_name || username,
+    });
+    res.status(200).json({ success: true, data: updated });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ success: false, message: err.message });
+  }
+}
+
 module.exports = {
   getInvoices,
   updateStatus,
+  bulkUpdateStatus,
 };
