@@ -2,7 +2,9 @@ const { getConnection } = require("../config/db.js");
 const oracledb = require("oracledb");
 const { pgQuery } = require("../../../config/pg.js");
 
-const PAYMENT_STATUSES = ["pending", "advance", "half", "full"];
+// "pending" is only the implicit default for invoices with no saved status — it is
+// never a value the API accepts to write, so it's excluded here.
+const PAYMENT_STATUSES = ["advance", "half", "full"];
 
 const invoiceQuery = `
 SELECT DISTINCT t.vrno,
