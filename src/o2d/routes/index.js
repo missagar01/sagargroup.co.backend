@@ -9,6 +9,8 @@ const clientRoutes = require("./client.routes.js");
 const followupRoutes = require("./followup.routes.js");
 const deliveryRoutes = require("./delivery.routes.js");
 const todaysVehicleRoutes = require("./todaysvehicle.routes.js");
+const enquiryPipelineRoutes = require("./enquiryPipeline.routes.js");
+const paymentFollowupRoutes = require("./paymentFollowup.routes.js");
 
 const router = Router();
 
@@ -23,6 +25,8 @@ router.use("/client", clientRoutes);
 router.use("/followup", followupRoutes);
 router.use("/delivery", deliveryRoutes);
 router.use("/todays-vehicles", todaysVehicleRoutes);
+router.use("/enquiry-pipeline", enquiryPipelineRoutes);
+router.use("/payment-followup", paymentFollowupRoutes);
 
 module.exports = router;
 
