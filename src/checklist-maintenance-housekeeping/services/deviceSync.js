@@ -142,6 +142,9 @@ const fetchDeviceLogs = async (fromDate, toDate) => {
   return results.flatMap((result) => result.value);
 };
 
+const OPEN_TASK_REMARK =
+  "Auto-marked No by device sync: task was not submitted before the 11 AM cutoff (previous day).";
+
 const markAllOpenTasksAsNotDone = async (targetDate, submissionTime) => {
   const checklistResult = await pool.query(
     `
@@ -149,12 +152,13 @@ const markAllOpenTasksAsNotDone = async (targetDate, submissionTime) => {
       SET
         status = 'no',
         user_status_checklist = 'No',
-        submission_date = $2
+        submission_date = $2,
+        remark = $3
       WHERE task_start_date::date = $1::date
         AND submission_date IS NULL
         AND status IS NULL
     `,
-    [targetDate, submissionTime]
+    [targetDate, submissionTime, OPEN_TASK_REMARK]
   );
 
   const maintenanceResult = await maintenancePool.query(
@@ -162,12 +166,13 @@ const markAllOpenTasksAsNotDone = async (targetDate, submissionTime) => {
       UPDATE maintenance_task_assign
       SET
         task_status = 'No',
-        actual_date = $2
+        actual_date = $2,
+        remarks = $3
       WHERE task_start_date::date = $1::date
         AND actual_date IS NULL
         AND task_status IS NULL
     `,
-    [targetDate, submissionTime]
+    [targetDate, submissionTime, OPEN_TASK_REMARK]
   );
 
   const housekeepingResult = await housekeepingPool.query(
@@ -177,11 +182,12 @@ const markAllOpenTasksAsNotDone = async (targetDate, submissionTime) => {
         status = 'no',
         attachment = 'confirmed',
         submission_date = $2,
-        delay = EXTRACT(DAY FROM ($2 - task_start_date))
+        delay = EXTRACT(DAY FROM ($2 - task_start_date)),
+        remark = $3
       WHERE task_start_date::date = $1::date
         AND submission_date IS NULL
     `,
-    [targetDate, submissionTime]
+    [targetDate, submissionTime, OPEN_TASK_REMARK]
   );
 
   logSync(
@@ -195,7 +201,7 @@ const markAllOpenTasksAsNotDone = async (targetDate, submissionTime) => {
   };
 };
 
-const batchMarkTasksAsNotDone = async (employeeIds, targetDate, submissionTime) => {
+const batchMarkTasksAsNotDone = async (employeeIds, targetDate, submissionTime, reason) => {
   if (!employeeIds?.length) return { checklistUpdated: 0, maintenanceUpdated: 0, housekeepingUpdated: 0 };
 
   const normalizedEmployeeIds = [
@@ -234,6 +240,8 @@ const batchMarkTasksAsNotDone = async (employeeIds, targetDate, submissionTime) 
   if (!normalizedNames.length)
     return { checklistUpdated: 0, maintenanceUpdated: 0, housekeepingUpdated: 0 };
 
+  const remarkText = reason || "Auto-marked No by device sync.";
+
   // 1. Update Checklist
   const checklistUpdateResult = await pool.query(
     `
@@ -241,13 +249,14 @@ const batchMarkTasksAsNotDone = async (employeeIds, targetDate, submissionTime) 
       SET
         status = 'no',
         user_status_checklist = 'No',
-        submission_date = $3
+        submission_date = $3,
+        remark = $4
       WHERE LOWER(name) = ANY($1::text[])
         AND task_start_date::date = $2::date
         AND submission_date IS NULL
         AND status IS NULL
     `,
-    [normalizedNames, targetDate, submissionTime]
+    [normalizedNames, targetDate, submissionTime, remarkText]
   );
 
   // 2. Update Maintenance Tasks
@@ -256,13 +265,14 @@ const batchMarkTasksAsNotDone = async (employeeIds, targetDate, submissionTime) 
       UPDATE maintenance_task_assign
       SET
         task_status = 'No',
-        actual_date = $3
+        actual_date = $3,
+        remarks = $4
       WHERE LOWER(doer_name) = ANY($1::text[])
         AND task_start_date::date = $2::date
         AND actual_date IS NULL
         AND task_status IS NULL
     `,
-    [normalizedNames, targetDate, submissionTime]
+    [normalizedNames, targetDate, submissionTime, remarkText]
   );
 
   // 3. Update Housekeeping Tasks
@@ -273,12 +283,13 @@ const batchMarkTasksAsNotDone = async (employeeIds, targetDate, submissionTime) 
         status = 'no',
         attachment = 'confirmed',
         submission_date = $3,
-        delay = EXTRACT(DAY FROM ($3 - task_start_date))
+        delay = EXTRACT(DAY FROM ($3 - task_start_date)),
+        remark = $4
       WHERE (LOWER(name) = ANY($1::text[]) OR LOWER(doer_name2) = ANY($1::text[]))
         AND task_start_date::date = $2::date
         AND submission_date IS NULL
     `,
-    [normalizedNames, targetDate, submissionTime]
+    [normalizedNames, targetDate, submissionTime, remarkText]
   );
 
   logSync(
@@ -438,16 +449,42 @@ const processLogs = async (allLogs, today, startHour) => {
     absenteesToday.forEach(e => usersToUpdate.add(e));
 
     logSync(`${modeName} | Morning Punchers: ${morningPunchersToday.size} | Absentees: ${absenteesToday.length}`);
+
+    // EXECUTE UPDATE (split so each group gets the correct remark)
+    const [morningResult, absenteeResult] = await Promise.all([
+      batchMarkTasksAsNotDone(
+        Array.from(morningPunchersToday),
+        targetDate,
+        submissionTime,
+        "Auto-marked No by device sync: employee punched in during the morning shift but task was not submitted by the 11 PM cutoff."
+      ),
+      batchMarkTasksAsNotDone(
+        absenteesToday,
+        targetDate,
+        submissionTime,
+        "Auto-marked No by device sync: no biometric punch recorded for this employee today."
+      ),
+    ]);
+
+    const result = {
+      checklistUpdated: morningResult.checklistUpdated + absenteeResult.checklistUpdated,
+      maintenanceUpdated: morningResult.maintenanceUpdated + absenteeResult.maintenanceUpdated,
+      housekeepingUpdated: morningResult.housekeepingUpdated + absenteeResult.housekeepingUpdated,
+    };
+
+    return {
+      mode: modeName,
+      activeUsers: usersToUpdate.size,
+      updated: result
+    };
   }
 
-  // EXECUTE UPDATE
-  const uniqueUsers = Array.from(usersToUpdate);
-  const result = await batchMarkTasksAsNotDone(uniqueUsers, targetDate, submissionTime);
-
+  // Fallback (unexpected hour reaching here): no-op with explicit reason instead of a silent batch call
   return {
-    mode: modeName,
-    activeUsers: uniqueUsers.length,
-    updated: result
+    mode: modeName || `Unhandled hour (${startHour})`,
+    activeUsers: 0,
+    updated: { checklistUpdated: 0, maintenanceUpdated: 0, housekeepingUpdated: 0 },
+    skippedReason: `startHour=${startHour} did not match 11 or 23; no sync window matched.`,
   };
 };
 
