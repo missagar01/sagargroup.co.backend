@@ -13,6 +13,7 @@ SELECT t.order_vrno,
             FROM order_head a
             WHERE a.vrno = t.order_vrno)) AS our_staff_name,
        t.acc_remark AS party_name,
+       t.truckno,
        t.qtyorder,
        lhs_utility.get_name('item_catg', t.item_catg) AS item_group
 FROM view_weighbridge_engine t
@@ -24,7 +25,7 @@ ORDER BY t.order_vrno ASC
 
 async function getTodaysVehicles() {
   return withCache(
-    generateCacheKey("todays_vehicles"),
+    generateCacheKey("todays_vehicles_v2"),
     DEFAULT_TTL.TIMELINE,
     async () => {
       let connection;

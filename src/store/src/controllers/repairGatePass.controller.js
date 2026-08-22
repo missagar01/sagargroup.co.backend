@@ -2,8 +2,10 @@
 import {
   getPendingRepairGatePass,
   getReceivedRepairGatePass,
-  getRepairGatePassCounts,
 } from "../services/repairGatePass.service.js";
+import {
+  fetchDashboardRepairCounts,
+} from "../services/dashboardServices.js";
 import {
   buildDownloadFilename,
   sendRowsAsExcel,
@@ -80,7 +82,7 @@ export async function getReceived(req, res) {
 
 export async function getCounts(req, res) {
   try {
-    const counts = await getRepairGatePassCounts();
+    const counts = await fetchDashboardRepairCounts();
     return res.json({
       success: true,
       data: counts,

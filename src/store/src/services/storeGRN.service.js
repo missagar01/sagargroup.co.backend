@@ -25,6 +25,8 @@ export async function getStoreGRNPending() {
           WHERE t.entity_code = 'SR'
             AND t.series = 'G3'
             AND t.trantype = 'PD'
+            AND t.vrdate >= DATE '2025-04-01'
+            AND t.vrdate < TRUNC(SYSDATE) + 1
             AND t.valuationdate IS NULL
           ORDER BY t.vrdate DESC, t.vrno DESC
         `;

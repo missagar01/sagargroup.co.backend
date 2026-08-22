@@ -52,8 +52,9 @@ export const getMachines = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
     const offset = (page - 1) * limit;
+    const department = String(req.query.department || "").trim();
 
-    const machines = await getAllMachines(limit, offset);
+    const machines = await getAllMachines(limit, offset, department);
     res.status(200).json({
       success: true,
       data: machines,

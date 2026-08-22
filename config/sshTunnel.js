@@ -4,7 +4,7 @@ const dotenv = require("dotenv");
 const fs = require("fs");
 const path = require("path");
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const DEFAULT_LOCAL_ORACLE_PORT = parseInt(
   process.env.LOCAL_ORACLE_PORT || "1521",

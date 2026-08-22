@@ -3,7 +3,7 @@ const dotenv = require("dotenv");
 const path = require("path");
 const { getLocalPostgresPort, isTunnelActive } = require("./sshTunnel");
 
-dotenv.config({ path: path.join(__dirname, "../.env") });
+dotenv.config({ path: path.join(__dirname, "../.env"), quiet: true });
 
 let rawPool = null;
 let poolProxy = null;

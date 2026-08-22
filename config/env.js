@@ -3,7 +3,7 @@ const dotenv = require('dotenv');
 const { z } = require('zod');
 
 const envPath = path.resolve(process.cwd(), '.env');
-dotenv.config({ path: envPath });
+dotenv.config({ path: envPath, quiet: true });
 
 // Support common legacy/typo env keys used in existing deployments.
 if (!process.env.JWT_SECRET) {

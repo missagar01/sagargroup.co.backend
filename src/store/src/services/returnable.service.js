@@ -35,6 +35,7 @@ function buildReturnableSourceCte(fromDate = null) {
     WHERE t.entity_code = 'SR'
       AND t.series IN ('R3', 'N3')
       AND t.vrdate >= ${scopedFromDate}
+      AND t.vrdate < TRUNC(SYSDATE) + 1
   ),
   received_rows AS (
     SELECT
@@ -46,6 +47,7 @@ function buildReturnableSourceCte(fromDate = null) {
       AND a.trantype = 'RGP'
       AND a.ref1_vrno IS NOT NULL
       AND a.vrdate >= ${scopedFromDate}
+      AND a.vrdate < TRUNC(SYSDATE) + 1
     GROUP BY a.ref1_vrno, a.item_code
   )
 `;

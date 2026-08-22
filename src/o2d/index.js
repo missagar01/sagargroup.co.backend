@@ -3,7 +3,7 @@ const oracledb = require("oracledb");
 const dotenv = require("dotenv");
 const cors = require("cors");
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const app = express();
 app.use(express.json());

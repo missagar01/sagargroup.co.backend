@@ -17,6 +17,7 @@ const documentRoutes = require("./document/router.cjs");
 const transportRoutes = require("./transport/router.cjs");
 const checklistMaintenanceRoutes = require("./checklist-maintenance-housekeeping/router.cjs");
 const projectRoutes = require("./project/router.cjs");
+const { router: iotRoutes } = require("./iot");
 
 const corsOriginsEnv = process.env.CORS_ORIGINS;
 const corsOrigins = corsOriginsEnv
@@ -91,6 +92,7 @@ apiRouter.use("/gatepass", gatepassRoutes);
 apiRouter.use("/store", storeRoutes);
 apiRouter.use("/document", documentRoutes);
 apiRouter.use("/transport", transportRoutes);
+apiRouter.use("/iot", iotRoutes);
 apiRouter.use("/", checklistMaintenanceRoutes);
 apiRouter.use("/", projectRoutes);
 apiRouter.use("/auth", sharedAuthRoutes);
@@ -248,5 +250,4 @@ app.use((err, req, res, next) => {
 });
 
 module.exports = app;
-
 

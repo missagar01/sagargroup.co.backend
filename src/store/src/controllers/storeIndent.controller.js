@@ -1,6 +1,9 @@
 // src/controllers/storeIndent.controller.js
 import * as storeIndentService from "../services/storeIndent.service.js";
 import {
+  fetchDashboardMetricsSnapshot,
+} from "../services/dashboardServices.js";
+import {
   buildDownloadFilename,
   sendRowsAsExcel,
 } from "../utils/excel.helper.js";
@@ -21,24 +24,38 @@ const pendingIndentDownloadColumns = [
 ];
 
 const historyIndentDownloadColumns = [
-  { header: "Indent No", key: "INDENT_NO", width: 16 },
+  { header: "Planned Timestamp", key: "PLANNEDTIMESTAMP", width: 22 },
+  { header: "Indent No", key: "INDENT_NUMBER", width: 16 },
   { header: "Indent Date", key: "INDENT_DATE", width: 14 },
-  { header: "Indenter", key: "INDENTER", width: 20 },
+  { header: "Indenter", key: "INDENTER_NAME", width: 20 },
   { header: "Division", key: "DIVISION", width: 18 },
   { header: "Department", key: "DEPARTMENT", width: 18 },
   { header: "Item Code", key: "ITEM_CODE", width: 15 },
   { header: "Item Name", key: "ITEM_NAME", width: 28 },
-  { header: "Qty Indent", key: "QTYINDENT", width: 15 },
+  { header: "Qty Indent", key: "REQUIRED_QTY", width: 15 },
   { header: "UOM", key: "UM", width: 10 },
   { header: "Acknowledge Date", key: "ACKNOWLEDGEDATE", width: 20 },
   { header: "Purchaser", key: "PURCHASER", width: 20 },
-  { header: "PO Number", key: "PO_NUMBER", width: 25 },
+  { header: "Purpose Remark", key: "REMARK", width: 28 },
+  { header: "Specification", key: "SPECIFICATION", width: 28 },
+  { header: "Cost Project", key: "COST_PROJECT", width: 20 },
+  { header: "Cancelled Date", key: "CANCELLEDDATE", width: 22 },
+  { header: "Cancelled Remark", key: "CANCELLED_REMARK", width: 28 },
+  { header: "PO Number", key: "PO_NO", width: 25 },
   { header: "GRN No", key: "GRN_NO", width: 25 },
   { header: "GRN Date", key: "GRN_DATE", width: 25 },
 ];
 
 function buildIndentFilename(type) {
   return buildDownloadFilename(`indent-${type}`);
+}
+
+const DEFAULT_INDENT_FROM_DATE = "2025-04-01";
+
+function resolveIndentFromDateQuery(queryValue) {
+  return typeof queryValue === "string" && queryValue.trim()
+    ? queryValue.trim()
+    : DEFAULT_INDENT_FROM_DATE;
 }
 
 
@@ -80,7 +97,9 @@ export async function approveStoreIndent(req, res) {
 
 export async function getPendingIndents(req, res) {
   try {
-    const rows = await storeIndentService.getPending();
+    const fromDate = resolveIndentFromDateQuery(req.query.fromDate);
+    const rows = await storeIndentService.getPending(fromDate);
+    console.log(`[store indent] pending rows=${rows.length}`);
 
     return res.json({
       success: true,
@@ -97,7 +116,9 @@ export async function getPendingIndents(req, res) {
 
 export async function getHistory(req, res) {
   try {
-    const rows = await storeIndentService.getHistory();
+    const fromDate = resolveIndentFromDateQuery(req.query.fromDate);
+    const rows = await storeIndentService.getHistory(fromDate);
+    console.log(`[store indent] history rows=${rows.length}`);
 
     return res.json({
       success: true,
@@ -114,8 +135,11 @@ export async function getHistory(req, res) {
 
 export async function getDashboard(req, res) {
   try {
-    const data = await storeIndentService.getDashboardMetrics();
-    return res.json({ success: true, data });
+    const payload = await fetchDashboardMetricsSnapshot();
+    console.log(
+      `[store indent dashboard] totalIndents=${payload.summary?.totalIndents || 0}, pendingIndents=${payload.summary?.pendingIndents || 0}`
+    );
+    return res.json({ success: true, data: payload.summary || {} });
   } catch (err) {
     console.error("getDashboard error:", err);
     return res
@@ -126,7 +150,8 @@ export async function getDashboard(req, res) {
 
 export async function downloadPendingIndents(req, res) {
   try {
-    const rows = await storeIndentService.getPending();
+    const fromDate = resolveIndentFromDateQuery(req.query.fromDate);
+    const rows = await storeIndentService.getPending(fromDate);
     await sendRowsAsExcel(res, {
       rows,
       columns: pendingIndentDownloadColumns,
@@ -143,7 +168,8 @@ export async function downloadPendingIndents(req, res) {
 
 export async function downloadHistoryIndents(req, res) {
   try {
-    const rows = await storeIndentService.getHistory();
+    const fromDate = resolveIndentFromDateQuery(req.query.fromDate);
+    const rows = await storeIndentService.getHistory(fromDate);
     await sendRowsAsExcel(res, {
       rows,
       columns: historyIndentDownloadColumns,

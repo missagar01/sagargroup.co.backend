@@ -10,6 +10,10 @@ router.post("/login", login);
 router.post("/logout", authenticate, logout);
 router.get("/verify-session", verifySession); // frontend polls to detect session revocation
 
+// ── WebAuthn routes ────────────────────────────────────────────────────────────
+const webauthnRoutes = require("./webauthn.routes.js");
+router.use("/webauthn", webauthnRoutes);
+
 // ── Utility: CRM users list ────────────────────────────────────────────────────
 router.get("/crm-users", authenticate, async (req, res) => {
   try {
