@@ -32,6 +32,20 @@ function isOwner(row, username) {
   );
 }
 
+async function getAccessibleEnquiryRow(id, username, role) {
+  const result = await pgQuery("SELECT * FROM enquiry WHERE id = $1", [id]);
+  const row = result.rows[0];
+  if (!row) return null;
+
+  if (!isAdminRole(role) && !isOwner(row, username)) {
+    const err = new Error("You do not have access to this enquiry");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  return row;
+}
+
 async function createEnquiry(data) {
   const values = ENQUIRY_FIELDS.map((field) => data[field] ?? null);
   const enqNoPrefixParam = ENQUIRY_FIELDS.length + 1;
@@ -78,17 +92,51 @@ async function getAllEnquiries(username, role) {
 }
 
 async function getEnquiryById(id, username, role) {
-  const result = await pgQuery("SELECT * FROM enquiry WHERE id = $1", [id]);
-  const row = result.rows[0];
+  const row = await getAccessibleEnquiryRow(id, username, role);
+  if (!row) return null;
+  return computeEnquiryStatus(row);
+}
+
+async function updateEnquiry(id, data, username, role) {
+  const row = await getAccessibleEnquiryRow(id, username, role);
   if (!row) return null;
 
-  if (!isAdminRole(role) && !isOwner(row, username)) {
-    const err = new Error("You do not have access to this enquiry");
-    err.statusCode = 403;
-    throw err;
+  const fields = [
+    "name",
+    "company_name",
+    "mobile",
+    "email",
+    "requirement",
+    "city",
+    "state",
+  ];
+
+  if (isAdminRole(role)) {
+    fields.push("sales_person");
   }
 
-  return computeEnquiryStatus(row);
+  const values = fields.map((field) => data[field] ?? null);
+  const setClause = fields
+    .map((field, index) => `${field} = $${index + 2}`)
+    .join(", ");
+
+  const result = await pgQuery(
+    `UPDATE enquiry
+       SET ${setClause}
+     WHERE id = $1
+     RETURNING *`,
+    [id, ...values]
+  );
+
+  return computeEnquiryStatus(result.rows[0]);
+}
+
+async function deleteEnquiry(id, username, role) {
+  const row = await getAccessibleEnquiryRow(id, username, role);
+  if (!row) return null;
+
+  await pgQuery("DELETE FROM enquiry WHERE id = $1", [id]);
+  return row;
 }
 
 async function markStageComplete(id, stage, username, role) {
@@ -98,15 +146,8 @@ async function markStageComplete(id, stage, username, role) {
     throw err;
   }
 
-  const existing = await pgQuery("SELECT * FROM enquiry WHERE id = $1", [id]);
-  const row = existing.rows[0];
+  const row = await getAccessibleEnquiryRow(id, username, role);
   if (!row) return null;
-
-  if (!isAdminRole(role) && !isOwner(row, username)) {
-    const err = new Error("You do not have access to this enquiry");
-    err.statusCode = 403;
-    throw err;
-  }
 
   if (row[actualCol(stage)]) {
     const err = new Error(`Stage "${stage}" is already completed`);
@@ -115,7 +156,9 @@ async function markStageComplete(id, stage, username, role) {
   }
 
   if (!row[plannedCol(stage)]) {
-    const err = new Error(`Cannot complete "${stage}" before its previous stage is completed`);
+    const err = new Error(
+      `Cannot complete "${stage}" before its previous stage is completed`
+    );
     err.statusCode = 400;
     throw err;
   }
@@ -140,5 +183,7 @@ module.exports = {
   createEnquiry,
   getAllEnquiries,
   getEnquiryById,
+  updateEnquiry,
+  deleteEnquiry,
   markStageComplete,
 };

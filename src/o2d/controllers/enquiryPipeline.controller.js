@@ -1,5 +1,10 @@
 const enquiryPipelineService = require("../services/enquiryPipeline.service.js");
 
+function isAdminRole(role) {
+  const userRole = (role || "").toString().toLowerCase();
+  return userRole === "admin" || userRole === "all access";
+}
+
 async function createEnquiry(req, res) {
   try {
     const { name, company_name, mobile, email, requirement, sales_person, city, state } = req.body;
@@ -49,6 +54,70 @@ async function getEnquiry(req, res) {
   }
 }
 
+async function updateEnquiry(req, res) {
+  try {
+    const { role, user_name, username } = req.user;
+    const { name, company_name, mobile, email, requirement, sales_person, city, state } = req.body;
+
+    if (!name || !mobile) {
+      return res.status(400).json({
+        success: false,
+        message: "name and mobile are required",
+      });
+    }
+
+    if (isAdminRole(role) && !sales_person) {
+      return res.status(400).json({
+        success: false,
+        message: "sales_person is required",
+      });
+    }
+
+    const enquiry = await enquiryPipelineService.updateEnquiry(
+      req.params.id,
+      {
+        name,
+        company_name,
+        mobile,
+        email,
+        requirement,
+        sales_person,
+        city,
+        state,
+      },
+      user_name || username,
+      role
+    );
+
+    if (!enquiry) {
+      return res.status(404).json({ success: false, message: "Enquiry not found" });
+    }
+
+    res.status(200).json({ success: true, data: enquiry });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ success: false, message: err.message });
+  }
+}
+
+async function deleteEnquiry(req, res) {
+  try {
+    const { role, user_name, username } = req.user;
+    const enquiry = await enquiryPipelineService.deleteEnquiry(
+      req.params.id,
+      user_name || username,
+      role
+    );
+
+    if (!enquiry) {
+      return res.status(404).json({ success: false, message: "Enquiry not found" });
+    }
+
+    res.status(200).json({ success: true, message: "Enquiry deleted successfully" });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ success: false, message: err.message });
+  }
+}
+
 async function completeStage(req, res) {
   try {
     const { role, user_name, username } = req.user;
@@ -71,5 +140,7 @@ module.exports = {
   createEnquiry,
   getAllEnquiries,
   getEnquiry,
+  updateEnquiry,
+  deleteEnquiry,
   completeStage,
 };
