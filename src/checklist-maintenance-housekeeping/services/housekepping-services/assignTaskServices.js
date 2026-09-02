@@ -302,13 +302,23 @@ class AssignTaskService {
     return assignTaskRepository.findNotDone(options);
   }
 
+  async overdueWithTotal(options = {}) {
+    const [items, total] = await Promise.all([
+      assignTaskRepository.findOverdue(null, options),
+      assignTaskRepository.countOverdue(options),
+    ]);
+    return { items, total };
+  }
+
   async countNotDone(options = {}) {
     return assignTaskRepository.countNotDone(options);
   }
 
   async notDoneWithTotal(options = {}) {
-    const items = await assignTaskRepository.findNotDone(options);
-    const total = await assignTaskRepository.countNotDone(options);
+    const [items, total] = await Promise.all([
+      assignTaskRepository.findNotDone(options),
+      assignTaskRepository.countNotDone(options),
+    ]);
     return { items, total };
   }
 
@@ -359,8 +369,10 @@ class AssignTaskService {
   async pendingWithTotal(options = {}) {
     const cutoff = new Date();
     cutoff.setHours(23, 59, 59, 999); // include up to today
-    const items = await assignTaskRepository.findPending(cutoff, options);
-    const total = await assignTaskRepository.countPending(cutoff, options);
+    const [items, total] = await Promise.all([
+      assignTaskRepository.findPending(cutoff, options),
+      assignTaskRepository.countPending(cutoff, options),
+    ]);
     return { items, total };
   }
 
@@ -375,16 +387,20 @@ class AssignTaskService {
       cutoff.setHours(23, 59, 59, 999);
     }
 
-    const items = await assignTaskRepository.findHistory(cutoff, options);
-    const total = await assignTaskRepository.countHistory(cutoff, options);
+    const [items, total] = await Promise.all([
+      assignTaskRepository.findHistory(cutoff, options),
+      assignTaskRepository.countHistory(cutoff, options),
+    ]);
     return { items, total };
   }
 
   async todayWithTotal(options = {}) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const items = await assignTaskRepository.findByDate(today, options);
-    const total = await assignTaskRepository.countByDate(today, options);
+    const [items, total] = await Promise.all([
+      assignTaskRepository.findByDate(today, options),
+      assignTaskRepository.countByDate(today, options),
+    ]);
     return { items, total };
   }
 
@@ -392,8 +408,10 @@ class AssignTaskService {
     const tomorrow = new Date();
     tomorrow.setHours(0, 0, 0, 0);
     tomorrow.setDate(tomorrow.getDate() + 1);
-    const items = await assignTaskRepository.findByDate(tomorrow, options);
-    const total = await assignTaskRepository.countByDate(tomorrow, options);
+    const [items, total] = await Promise.all([
+      assignTaskRepository.findByDate(tomorrow, options),
+      assignTaskRepository.countByDate(tomorrow, options),
+    ]);
     return { items, total };
   }
 

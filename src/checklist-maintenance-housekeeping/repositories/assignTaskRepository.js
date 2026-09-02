@@ -982,7 +982,13 @@ class AssignTaskRepository {
       return filtered.slice(startIdx, endIdx).map(record => formatTaskDates(applyComputedDelay(record)));
     }
 
-    const params = [targetDate];
+    // Use a local (server-timezone) YYYY-MM-DD string, exactly like countByDate does.
+    // Passing a raw Date object lets node-postgres serialize it to a UTC ISO string,
+    // which can cast to the *previous* calendar day (e.g. IST 00:00 -> 18:30 UTC prev day),
+    // making the "today" list show the wrong date's tasks (or nothing) while the count is right.
+    const formattedDate = formatLocalDateString(targetDate) || targetDate;
+
+    const params = [formattedDate];
     let sql = `
       SELECT *
       FROM assign_task
