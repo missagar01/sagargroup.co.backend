@@ -2,7 +2,7 @@ const enquiryPipelineService = require("../services/enquiryPipeline.service.js")
 
 async function createEnquiry(req, res) {
   try {
-    const { name, company_name, mobile, email, requirement, sales_person } = req.body;
+    const { name, company_name, mobile, email, requirement, sales_person, city, state } = req.body;
     if (!name || !mobile || !sales_person) {
       return res.status(400).json({
         success: false,
@@ -17,6 +17,8 @@ async function createEnquiry(req, res) {
       email,
       requirement,
       sales_person,
+      city,
+      state,
     });
     res.status(201).json({ success: true, data: enquiry });
   } catch (err) {

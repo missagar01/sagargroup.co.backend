@@ -39,3 +39,4 @@ const allowedColumns = [
 module.exports = {
   getDropdownValues
 };
+

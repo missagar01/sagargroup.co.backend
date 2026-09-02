@@ -7,13 +7,15 @@ const {
   computeEnquiryStatus,
 } = require("../utils/enquiryPipeline.js");
 
-const REQUIRED_FIELDS = [
+const ENQUIRY_FIELDS = [
   "name",
   "company_name",
   "mobile",
   "email",
   "requirement",
   "sales_person",
+  "city",
+  "state",
 ];
 
 const ENQ_NO_PREFIX = "ENQ-";
@@ -31,24 +33,25 @@ function isOwner(row, username) {
 }
 
 async function createEnquiry(data) {
-  const values = REQUIRED_FIELDS.map((field) => data[field] ?? null);
+  const values = ENQUIRY_FIELDS.map((field) => data[field] ?? null);
+  const enqNoPrefixParam = ENQUIRY_FIELDS.length + 1;
 
   // enq_no is auto-generated as ENQ-0001, ENQ-0002, ... from the highest existing number.
   // Computed in the same statement as the insert to keep the read-then-write race window minimal.
   const query = `
     WITH next_no AS (
-      SELECT $7::text || LPAD(
-        (COALESCE(MAX(SUBSTRING(enq_no FROM ($7::text || '(\\d+)'))::int), 0) + 1)::text,
+      SELECT $${enqNoPrefixParam}::text || LPAD(
+        (COALESCE(MAX(SUBSTRING(enq_no FROM ($${enqNoPrefixParam}::text || '(\\d+)'))::int), 0) + 1)::text,
         4, '0'
       ) AS enq_no
       FROM enquiry
-      WHERE enq_no LIKE $7::text || '%'
+      WHERE enq_no LIKE $${enqNoPrefixParam}::text || '%'
     )
     INSERT INTO enquiry (
-      enq_no, name, company_name, mobile, email, requirement, sales_person,
+      enq_no, name, company_name, mobile, email, requirement, sales_person, city, state,
       created_at, fm_planned
     )
-    SELECT next_no.enq_no, $1, $2, $3, $4, $5, $6, NOW(), NOW() + INTERVAL '24 hours'
+    SELECT next_no.enq_no, $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW() + INTERVAL '24 hours'
     FROM next_no
     RETURNING *
   `;
