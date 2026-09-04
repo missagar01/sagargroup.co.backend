@@ -11,6 +11,8 @@ const DEFAULT_TTL = {
 
 // In-memory fallback
 const memoryCache = new Map();
+const inFlightFetches = new Map();
+const keyVersions = new Map();
 
 function generateCacheKey(prefix, params = {}) {
   const sorted = Object.keys(params)
@@ -67,6 +69,9 @@ async function setCached(key, data, ttl = DEFAULT_TTL.PENDING) {
 }
 
 async function delCached(key) {
+  bumpKeyVersion(key);
+  inFlightFetches.delete(key);
+
   // Del in Redis
   if (redis.isAvailable()) {
     try {
@@ -80,13 +85,42 @@ async function delCached(key) {
   memoryCache.delete(key);
 }
 
+function getKeyVersion(key) {
+  return keyVersions.get(key) || 0;
+}
+
+function bumpKeyVersion(key) {
+  keyVersions.set(key, getKeyVersion(key) + 1);
+}
+
 async function withCache(key, ttl, fetchFn) {
   const cached = await getCached(key);
   if (cached !== null) return cached;
 
-  const fresh = await fetchFn();
-  await setCached(key, fresh, ttl);
-  return fresh;
+  if (inFlightFetches.has(key)) {
+    return inFlightFetches.get(key);
+  }
+
+  const versionBeforeFetch = getKeyVersion(key);
+  const fetchPromise = (async () => {
+    const fresh = await fetchFn();
+
+    if (versionBeforeFetch === getKeyVersion(key)) {
+      await setCached(key, fresh, ttl);
+    }
+
+    return fresh;
+  })();
+
+  inFlightFetches.set(key, fetchPromise);
+
+  try {
+    return await fetchPromise;
+  } finally {
+    if (inFlightFetches.get(key) === fetchPromise) {
+      inFlightFetches.delete(key);
+    }
+  }
 }
 
 module.exports = {

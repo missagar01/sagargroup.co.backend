@@ -1,12 +1,17 @@
 const { Pool } = require("pg");
 const dotenv = require("dotenv");
 const path = require("path");
-const { getLocalPostgresPort, isTunnelActive } = require("./sshTunnel");
+const {
+  getLocalPostgresPort,
+  isTunnelActive,
+  onTunnelStateChange,
+} = require("./sshTunnel");
 
 dotenv.config({ path: path.join(__dirname, "../.env"), quiet: true });
 
 let rawPool = null;
 let poolProxy = null;
+let tunnelListenerAttached = false;
 
 function isPoolInvalid(instance) {
   return !instance || instance._ending || instance._ended;
@@ -39,6 +44,22 @@ function getDbConfig() {
     useSSL,
     isRDS,
   };
+}
+
+function attachTunnelListeners() {
+  if (tunnelListenerAttached || typeof onTunnelStateChange !== "function") {
+    return;
+  }
+
+  tunnelListenerAttached = true;
+  onTunnelStateChange((event) => {
+    if (event?.type !== "disconnected") {
+      return;
+    }
+
+    const reason = event.reason ? `: ${event.reason}` : "";
+    void recyclePool(`SSH tunnel disconnect${reason}`);
+  });
 }
 
 function shouldUseTunnel({ dbHost, isRDS }) {
@@ -266,6 +287,8 @@ async function closePgPool() {
 function resetPool() {
   void recyclePool("reset");
 }
+
+attachTunnelListeners();
 
 module.exports = {
   getPgPool,

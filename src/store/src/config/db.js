@@ -12,10 +12,12 @@ const {
   initSSHTunnel,
   getLocalOraclePort,
   isTunnelActive,
+  onTunnelStateChange,
 } = require("../../../../config/sshTunnel.js");
 
 let pool = null;
 let poolPromise = null;
+let tunnelListenerAttached = false;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -34,6 +36,17 @@ function readEnv(...keys) {
 function getPositiveInteger(value, fallbackValue) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackValue;
+}
+
+function resetPoolStateForTunnelDisconnect(reason) {
+  poolPromise = null;
+
+  void closePoolInternal().catch((error) => {
+    console.warn(
+      `Failed to reset Store Oracle pool after ${reason}:`,
+      error.message || error
+    );
+  });
 }
 
 function getOracleRuntimeConfig() {
@@ -95,6 +108,23 @@ function getOracleRuntimeConfig() {
   };
 }
 
+function attachTunnelListeners() {
+  if (tunnelListenerAttached || typeof onTunnelStateChange !== "function") {
+    return;
+  }
+
+  tunnelListenerAttached = true;
+  onTunnelStateChange((event) => {
+    if (event?.type !== "disconnected") {
+      return;
+    }
+
+    const reason = event.reason ? `: ${event.reason}` : "";
+    console.warn(`Store Oracle tunnel disconnected${reason}. Clearing pool.`);
+    resetPoolStateForTunnelDisconnect("SSH tunnel disconnect");
+  });
+}
+
 function validateEnv(config) {
   const missing = [];
 
@@ -128,7 +158,11 @@ async function resolveConnectString(config) {
 
       await delay(config.initProbeDelayMs);
 
-      const connectString = `127.0.0.1:${config.localPort}/${config.serviceName}`;
+      const activeLocalPort =
+        typeof getLocalOraclePort === "function"
+          ? getLocalOraclePort()
+          : config.localPort;
+      const connectString = `127.0.0.1:${activeLocalPort || config.localPort}/${config.serviceName}`;
       console.log("Store Oracle using SSH tunnel");
       return connectString;
     } catch (error) {
@@ -152,6 +186,8 @@ async function resolveConnectString(config) {
 
   throw new Error("No valid Store Oracle connection method configured");
 }
+
+attachTunnelListeners();
 
 async function closePoolInternal() {
   if (!pool) {

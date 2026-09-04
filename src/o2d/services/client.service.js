@@ -12,29 +12,44 @@ const MARKETING_USERS_CACHE_KEY = generateCacheKey("marketing_users");
  * Get all clients
  */
 
-async function getClients() {
-    return withCache(CLIENTS_CACHE_KEY, DEFAULT_TTL.CUSTOMERS, async () => {
+async function getClients(options = {}) {
+    const {
+        excludeFollowedToday = false,
+        fresh = false
+    } = options;
+
+    const cacheKey = generateCacheKey("clients", {
+        excludeFollowedToday: excludeFollowedToday ? 1 : 0
+    });
+
+    const fetchClients = async () => {
         try {
+            const followupFilter = excludeFollowedToday
+                ? `
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM client_followups cf
+                    WHERE LOWER(TRIM(cf.client_name)) = LOWER(TRIM(t.client_name))
+                    AND cf.date_of_calling::date = CURRENT_DATE
+                )
+            `
+                : "";
+
             const query = `
-                SELECT 
-                    t.client_id, 
-                    t.client_name, 
-                    t.city, 
-                    t.contact_person, 
-                    t.contact_details, 
-                    t.sales_person_id, 
-                    t.client_type, 
-                    t.status, 
+                SELECT
+                    t.client_id,
+                    t.client_name,
+                    t.city,
+                    t.contact_person,
+                    t.contact_details,
+                    t.sales_person_id,
+                    t.client_type,
+                    t.status,
                     t.created_at,
                     t1.user_name as sales_person
                 FROM clients t
                 LEFT JOIN users t1 ON t.sales_person_id = t1.id
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM client_followups cf 
-                    WHERE LOWER(TRIM(cf.client_name)) = LOWER(TRIM(t.client_name)) 
-                    AND cf.date_of_calling::date = CURRENT_DATE
-                )
-                ORDER BY t.created_at ASC
+                ${followupFilter}
+                ORDER BY LOWER(TRIM(COALESCE(t.client_name, ''))) ASC, t.client_id ASC
             `;
 
             const result = await pgQuery(query);
@@ -43,7 +58,13 @@ async function getClients() {
             console.error("Error fetching clients:", err);
             throw err;
         }
-    });
+    };
+
+    if (fresh) {
+        return fetchClients();
+    }
+
+    return withCache(cacheKey, DEFAULT_TTL.CUSTOMERS, fetchClients);
 }
 
 /**
@@ -65,6 +86,8 @@ async function getClientById(clientId) {
  */
 async function invalidateClientsCache() {
     await delCached(CLIENTS_CACHE_KEY);
+    await delCached(generateCacheKey("clients", { excludeFollowedToday: 0 }));
+    await delCached(generateCacheKey("clients", { excludeFollowedToday: 1 }));
     await delCached(generateCacheKey("clients_count"));
 }
 

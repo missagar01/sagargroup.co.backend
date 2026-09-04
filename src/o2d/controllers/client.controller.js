@@ -4,9 +4,17 @@ const clientService = require("../services/client.service.js");
 // CLIENTS CONTROLLER
 // ==========================================
 
+function parseBooleanFlag(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized === "true" || normalized === "1" || normalized === "yes";
+}
+
 async function getAllClients(req, res) {
     try {
-        const clients = await clientService.getClients();
+        const clients = await clientService.getClients({
+            excludeFollowedToday: parseBooleanFlag(req.query.excludeFollowedToday),
+            fresh: parseBooleanFlag(req.query.fresh)
+        });
         res.status(200).json({ success: true, data: clients });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });

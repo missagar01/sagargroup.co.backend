@@ -38,6 +38,7 @@ const DASHBOARD_PURCHASE_WHERE = `
     `;
 const DASHBOARD_ISSUE_WHERE = `
       t.entity_code = 'SR'
+      AND t.trantype = 'MS'
       AND t.vrdate >= ${DASHBOARD_FROM_DATE}
     `;
 const DASHBOARD_STOCK_WHERE = `
@@ -279,8 +280,8 @@ export async function getDashboardMetrics() {
           const issuedResult = await conn.execute(
             `
             SELECT
-              NVL(SUM(NVL(t.qtyissue, 0)), 0) AS total_issued_qty
-            FROM view_issue_engine t
+              NVL(SUM(NVL(t.qtyissued, 0)), 0) AS total_issued_qty
+            FROM view_itemtran_engine t
             WHERE ${DASHBOARD_ISSUE_WHERE}
             `,
             [],
