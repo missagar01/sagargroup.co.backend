@@ -71,6 +71,26 @@ async function createFollowup(followupData) {
             next_calling_date
         } = followupData;
 
+        // One follow-up per client per day: block a second submission for a
+        // client that already has a follow-up logged for today.
+        if (client_name) {
+            const existingToday = await pgQuery(
+                `SELECT 1 FROM client_followups
+                 WHERE LOWER(TRIM(client_name)) = LOWER(TRIM($1))
+                   AND date_of_calling::date = CURRENT_DATE
+                 LIMIT 1`,
+                [client_name]
+            );
+            if (existingToday.rows.length > 0) {
+                const err = new Error(
+                    "A follow-up for this client has already been submitted today."
+                );
+                err.statusCode = 409;
+                err.code = "FOLLOWUP_ALREADY_DONE_TODAY";
+                throw err;
+            }
+        }
+
         const query = `
             INSERT INTO client_followups (
                 client_name, sales_person, actual_order, 

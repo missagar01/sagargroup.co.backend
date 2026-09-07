@@ -12,6 +12,14 @@ const MARKETING_USERS_CACHE_KEY = generateCacheKey("marketing_users");
  * Get all clients
  */
 
+// Local (server-timezone) date string, matching Postgres CURRENT_DATE, so the
+// cached clients list - which carries a date-sensitive followed_up_today flag -
+// naturally rolls over at midnight instead of going stale for a TTL window.
+function todayKey() {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
 async function getClients(options = {}) {
     const {
         excludeFollowedToday = false,
@@ -19,19 +27,18 @@ async function getClients(options = {}) {
     } = options;
 
     const cacheKey = generateCacheKey("clients", {
-        excludeFollowedToday: excludeFollowedToday ? 1 : 0
+        excludeFollowedToday: excludeFollowedToday ? 1 : 0,
+        day: todayKey()
     });
 
     const fetchClients = async () => {
         try {
+            // Clients that already have a follow-up logged for today. Used to
+            // flag each row (followed_up_today) and, optionally, to exclude them.
+            // Never filters newly created clients out - a brand new client has
+            // no follow-up, so it always shows.
             const followupFilter = excludeFollowedToday
-                ? `
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM client_followups cf
-                    WHERE LOWER(TRIM(cf.client_name)) = LOWER(TRIM(t.client_name))
-                    AND cf.date_of_calling::date = CURRENT_DATE
-                )
-            `
+                ? "WHERE ft.client_name IS NULL"
                 : "";
 
             const query = `
@@ -45,9 +52,15 @@ async function getClients(options = {}) {
                     t.client_type,
                     t.status,
                     t.created_at,
-                    t1.user_name as sales_person
+                    t1.user_name as sales_person,
+                    (ft.client_name IS NOT NULL) AS followed_up_today
                 FROM clients t
                 LEFT JOIN users t1 ON t.sales_person_id = t1.id
+                LEFT JOIN (
+                    SELECT DISTINCT LOWER(TRIM(cf.client_name)) AS client_name
+                    FROM client_followups cf
+                    WHERE cf.date_of_calling::date = CURRENT_DATE
+                ) ft ON ft.client_name = LOWER(TRIM(t.client_name))
                 ${followupFilter}
                 ORDER BY LOWER(TRIM(COALESCE(t.client_name, ''))) ASC, t.client_id ASC
             `;
@@ -85,9 +98,12 @@ async function getClientById(clientId) {
  * Invalidate clients cache
  */
 async function invalidateClientsCache() {
+    const day = todayKey();
     await delCached(CLIENTS_CACHE_KEY);
     await delCached(generateCacheKey("clients", { excludeFollowedToday: 0 }));
     await delCached(generateCacheKey("clients", { excludeFollowedToday: 1 }));
+    await delCached(generateCacheKey("clients", { excludeFollowedToday: 0, day }));
+    await delCached(generateCacheKey("clients", { excludeFollowedToday: 1, day }));
     await delCached(generateCacheKey("clients_count"));
 }
 

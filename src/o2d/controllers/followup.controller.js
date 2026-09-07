@@ -27,7 +27,8 @@ async function createFollowup(req, res) {
         const newFollowup = await followupService.createFollowup(req.body);
         res.status(201).json({ success: true, data: newFollowup });
     } catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+        const status = err.statusCode || 500;
+        res.status(status).json({ success: false, message: err.message, code: err.code });
     }
 }
 
