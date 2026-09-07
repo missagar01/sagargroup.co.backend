@@ -7,6 +7,7 @@ import {
   buildDownloadFilename,
   sendRowsAsExcel,
 } from "../utils/excel.helper.js";
+import { resolveEntity } from "../utils/entity.helper.js";
 
 const pendingIndentDownloadColumns = [
   { header: "Planned Timestamp", key: "PLANNEDTIMESTAMP", width: 22 },
@@ -106,8 +107,9 @@ export async function approveStoreIndent(req, res) {
 export async function getPendingIndents(req, res) {
   try {
     const fromDate = resolveIndentFromDateQuery(req.query.fromDate);
-    const rows = await storeIndentService.getPending(fromDate, resolveUserDivisionFilter(req));
-    console.log(`[store indent] pending rows=${rows.length}`);
+    const entity = resolveEntity(req.query.entity);
+    const rows = await storeIndentService.getPending(fromDate, resolveUserDivisionFilter(req), entity);
+    console.log(`[store indent] pending rows=${rows.length}, entity=${entity}`);
 
     return res.json({
       success: true,
@@ -125,8 +127,9 @@ export async function getPendingIndents(req, res) {
 export async function getHistory(req, res) {
   try {
     const fromDate = resolveIndentFromDateQuery(req.query.fromDate);
-    const rows = await storeIndentService.getHistory(fromDate, resolveUserDivisionFilter(req));
-    console.log(`[store indent] history rows=${rows.length}`);
+    const entity = resolveEntity(req.query.entity);
+    const rows = await storeIndentService.getHistory(fromDate, resolveUserDivisionFilter(req), entity);
+    console.log(`[store indent] history rows=${rows.length}, entity=${entity}`);
 
     return res.json({
       success: true,
@@ -159,12 +162,13 @@ export async function getDashboard(req, res) {
 export async function downloadPendingIndents(req, res) {
   try {
     const fromDate = resolveIndentFromDateQuery(req.query.fromDate);
-    const rows = await storeIndentService.getPending(fromDate, resolveUserDivisionFilter(req));
+    const entity = resolveEntity(req.query.entity);
+    const rows = await storeIndentService.getPending(fromDate, resolveUserDivisionFilter(req), entity);
     await sendRowsAsExcel(res, {
       rows,
       columns: pendingIndentDownloadColumns,
       sheetName: "Pending Indents",
-      fileName: buildIndentFilename("pending"),
+      fileName: buildIndentFilename(`pending-${entity}`),
     });
   } catch (err) {
     console.error("downloadPendingIndents error:", err);
@@ -177,12 +181,13 @@ export async function downloadPendingIndents(req, res) {
 export async function downloadHistoryIndents(req, res) {
   try {
     const fromDate = resolveIndentFromDateQuery(req.query.fromDate);
-    const rows = await storeIndentService.getHistory(fromDate, resolveUserDivisionFilter(req));
+    const entity = resolveEntity(req.query.entity);
+    const rows = await storeIndentService.getHistory(fromDate, resolveUserDivisionFilter(req), entity);
     await sendRowsAsExcel(res, {
       rows,
       columns: historyIndentDownloadColumns,
       sheetName: "Indent History",
-      fileName: buildIndentFilename("history"),
+      fileName: buildIndentFilename(`history-${entity}`),
     });
   } catch (err) {
     console.error("downloadHistoryIndents error:", err);
