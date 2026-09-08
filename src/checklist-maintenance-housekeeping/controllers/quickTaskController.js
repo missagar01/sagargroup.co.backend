@@ -753,15 +753,17 @@ export const fetchDepartments = async () => {
       WHERE department IS NOT NULL AND department <> ''
     `;
 
+    // maintenance_task_assign has no plain "department" column - the department
+    // lives in doer_department (see getUniqueMaintenanceDepartments).
     const maintenanceSql = `
-      SELECT DISTINCT department 
-      FROM maintenance_task_assign 
-      WHERE department IS NOT NULL AND department <> ''
+      SELECT DISTINCT doer_department AS department
+      FROM maintenance_task_assign
+      WHERE doer_department IS NOT NULL AND doer_department <> ''
     `;
 
     const housekeepingSql = `
-      SELECT DISTINCT department 
-      FROM assign_task 
+      SELECT DISTINCT department
+      FROM assign_task
       WHERE department IS NOT NULL AND department <> ''
     `;
 
