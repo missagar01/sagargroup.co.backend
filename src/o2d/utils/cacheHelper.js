@@ -85,6 +85,28 @@ async function delCached(key) {
   memoryCache.delete(key);
 }
 
+async function delCachedPattern(pattern) {
+  // Del pattern in Redis
+  if (redis.isAvailable()) {
+    try {
+      await redis.deletePattern(pattern);
+    } catch {
+      // ignore
+    }
+  }
+
+  // Del pattern in memory
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  const regex = new RegExp(`^${escaped}$`);
+  for (const key of memoryCache.keys()) {
+    if (regex.test(key)) {
+      bumpKeyVersion(key);
+      inFlightFetches.delete(key);
+      memoryCache.delete(key);
+    }
+  }
+}
+
 function getKeyVersion(key) {
   return keyVersions.get(key) || 0;
 }
@@ -128,6 +150,7 @@ module.exports = {
   getCached,
   setCached,
   delCached,
+  delCachedPattern,
   withCache,
   DEFAULT_TTL,
 };

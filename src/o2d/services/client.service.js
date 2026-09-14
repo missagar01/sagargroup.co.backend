@@ -1,5 +1,5 @@
 const { pgQuery, getPgPool } = require("../../../config/pg.js");
-const { generateCacheKey, withCache, delCached, DEFAULT_TTL } = require("../utils/cacheHelper.js");
+const { generateCacheKey, withCache, delCached, delCachedPattern, DEFAULT_TTL } = require("../utils/cacheHelper.js");
 
 // ==========================================
 // CLIENTS CRUD
@@ -7,6 +7,19 @@ const { generateCacheKey, withCache, delCached, DEFAULT_TTL } = require("../util
 
 const CLIENTS_CACHE_KEY = generateCacheKey("clients");
 const MARKETING_USERS_CACHE_KEY = generateCacheKey("marketing_users");
+
+function isUserAdmin(user) {
+    if (!user) return false;
+    const role = (user.role || "").toString().toLowerCase();
+    const userType = (user.userType || "").toString().toLowerCase();
+    return (
+        role === "admin" ||
+        role === "all access" ||
+        role.includes("all access") ||
+        userType === "admin" ||
+        userType === "all access"
+    );
+}
 
 /**
  * Get all clients
@@ -20,25 +33,51 @@ function todayKey() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
-async function getClients(options = {}) {
+async function getClients(options = {}, user = null) {
     const {
         excludeFollowedToday = false,
         fresh = false
     } = options;
 
+    const isAdmin = isUserAdmin(user);
+    const userScope = isAdmin ? "admin_all" : `user_${user?.id || user?.username || "all"}`;
+
     const cacheKey = generateCacheKey("clients", {
         excludeFollowedToday: excludeFollowedToday ? 1 : 0,
-        day: todayKey()
+        day: todayKey(),
+        scope: userScope
     });
 
     const fetchClients = async () => {
         try {
-            // Clients that already have a follow-up logged for today. Used to
-            // flag each row (followed_up_today) and, optionally, to exclude them.
-            // Never filters newly created clients out - a brand new client has
-            // no follow-up, so it always shows.
-            const followupFilter = excludeFollowedToday
-                ? "WHERE ft.client_name IS NULL"
+            const conditions = [];
+            const values = [];
+
+            if (excludeFollowedToday) {
+                conditions.push("ft.client_name IS NULL");
+            }
+
+            if (!isAdmin && user) {
+                const userId = Number.parseInt(user.id, 10);
+                const userName = (user.user_name || user.username || "").trim();
+
+                if (Number.isInteger(userId) && userId > 0 && userName) {
+                    values.push(userId);
+                    const p1 = `$${values.length}`;
+                    values.push(userName);
+                    const p2 = `$${values.length}`;
+                    conditions.push(`(t.sales_person_id = ${p1} OR LOWER(TRIM(COALESCE(t1.user_name, ''))) = LOWER(TRIM(${p2})))`);
+                } else if (Number.isInteger(userId) && userId > 0) {
+                    values.push(userId);
+                    conditions.push(`t.sales_person_id = $${values.length}`);
+                } else if (userName) {
+                    values.push(userName);
+                    conditions.push(`LOWER(TRIM(COALESCE(t1.user_name, ''))) = LOWER(TRIM($${values.length}))`);
+                }
+            }
+
+            const whereClause = conditions.length > 0
+                ? `WHERE ${conditions.join(" AND ")}`
                 : "";
 
             const query = `
@@ -61,11 +100,11 @@ async function getClients(options = {}) {
                     FROM client_followups cf
                     WHERE cf.date_of_calling::date = CURRENT_DATE
                 ) ft ON ft.client_name = LOWER(TRIM(t.client_name))
-                ${followupFilter}
+                ${whereClause}
                 ORDER BY LOWER(TRIM(COALESCE(t.client_name, ''))) ASC, t.client_id ASC
             `;
 
-            const result = await pgQuery(query);
+            const result = await pgQuery(query, values);
             return result.rows;
         } catch (err) {
             console.error("Error fetching clients:", err);
@@ -83,10 +122,36 @@ async function getClients(options = {}) {
 /**
  * Get client by ID
  */
-async function getClientById(clientId) {
+async function getClientById(clientId, user = null) {
     try {
-        const query = `SELECT client_id, client_name, city, contact_person, contact_details, sales_person_id, client_type, status FROM clients WHERE client_id = $1`;
-        const result = await pgQuery(query, [clientId]);
+        const isAdmin = isUserAdmin(user);
+        let query = `
+            SELECT t.client_id, t.client_name, t.city, t.contact_person, t.contact_details, t.sales_person_id, t.client_type, t.status, t1.user_name as sales_person
+            FROM clients t
+            LEFT JOIN users t1 ON t.sales_person_id = t1.id
+            WHERE t.client_id = $1
+        `;
+        const values = [clientId];
+
+        if (!isAdmin && user) {
+            const userId = Number.parseInt(user.id, 10);
+            const userName = (user.user_name || user.username || "").trim();
+            if (Number.isInteger(userId) && userId > 0 && userName) {
+                values.push(userId);
+                const p1 = `$${values.length}`;
+                values.push(userName);
+                const p2 = `$${values.length}`;
+                query += ` AND (t.sales_person_id = ${p1} OR LOWER(TRIM(COALESCE(t1.user_name, ''))) = LOWER(TRIM(${p2})))`;
+            } else if (Number.isInteger(userId) && userId > 0) {
+                values.push(userId);
+                query += ` AND t.sales_person_id = $${values.length}`;
+            } else if (userName) {
+                values.push(userName);
+                query += ` AND LOWER(TRIM(COALESCE(t1.user_name, ''))) = LOWER(TRIM($${values.length}))`;
+            }
+        }
+
+        const result = await pgQuery(query, values);
         return result.rows[0] || null;
     } catch (err) {
         console.error("Error fetching client by ID:", err);
@@ -99,6 +164,7 @@ async function getClientById(clientId) {
  */
 async function invalidateClientsCache() {
     const day = todayKey();
+    await delCachedPattern("o2d:clients*");
     await delCached(CLIENTS_CACHE_KEY);
     await delCached(generateCacheKey("clients", { excludeFollowedToday: 0 }));
     await delCached(generateCacheKey("clients", { excludeFollowedToday: 1 }));
@@ -139,19 +205,27 @@ async function resolveNextClientId(dbClient, providedClientId) {
 /**
  * Create a new client
  */
-async function createClient(clientData) {
+async function createClient(clientData, user = null) {
     const dbClient = await getPgPool().connect();
     try {
+        const isAdmin = isUserAdmin(user);
         const {
             client_id,
             client_name,
             city,
             contact_person,
             contact_details,
-            sales_person_id,
             client_type,
             status
         } = clientData;
+
+        let salesPersonId = clientData.sales_person_id ? parseInt(clientData.sales_person_id) : null;
+        if (!isAdmin && user) {
+            const parsedUserId = Number.parseInt(user.id, 10);
+            if (Number.isInteger(parsedUserId) && parsedUserId > 0) {
+                salesPersonId = parsedUserId;
+            }
+        }
 
         await dbClient.query("BEGIN");
 
@@ -173,7 +247,7 @@ async function createClient(clientData) {
             city || null,
             contact_person || null,
             contact_details || null,
-            sales_person_id ? parseInt(sales_person_id) : null,
+            salesPersonId,
             client_type || null,
             status || 'Active'
         ];
@@ -201,17 +275,34 @@ async function createClient(clientData) {
 /**
  * Update a client
  */
-async function updateClient(clientId, clientData) {
+async function updateClient(clientId, clientData, user = null) {
     try {
+        const isAdmin = isUserAdmin(user);
+        if (!isAdmin && user) {
+            const existing = await getClientById(clientId, user);
+            if (!existing) {
+                const err = new Error("Permission denied: You can only update your own clients.");
+                err.statusCode = 403;
+                throw err;
+            }
+        }
+
         const {
             client_name,
             city,
             contact_person,
             contact_details,
-            sales_person_id,
             client_type,
             status
         } = clientData;
+
+        let salesPersonId = clientData.sales_person_id ? parseInt(clientData.sales_person_id) : null;
+        if (!isAdmin && user) {
+            const parsedUserId = Number.parseInt(user.id, 10);
+            if (Number.isInteger(parsedUserId) && parsedUserId > 0) {
+                salesPersonId = parsedUserId;
+            }
+        }
 
         const query = `
             UPDATE clients 
@@ -232,7 +323,7 @@ async function updateClient(clientId, clientData) {
             city,
             contact_person,
             contact_details,
-            sales_person_id ? parseInt(sales_person_id) : null,
+            salesPersonId,
             client_type,
             status,
             clientId
@@ -253,8 +344,18 @@ async function updateClient(clientId, clientData) {
 /**
  * Delete a client
  */
-async function deleteClient(clientId) {
+async function deleteClient(clientId, user = null) {
     try {
+        const isAdmin = isUserAdmin(user);
+        if (!isAdmin && user) {
+            const existing = await getClientById(clientId, user);
+            if (!existing) {
+                const err = new Error("Permission denied: You can only delete your own clients.");
+                err.statusCode = 403;
+                throw err;
+            }
+        }
+
         const query = `DELETE FROM clients WHERE client_id = $1 RETURNING *`;
         const result = await pgQuery(query, [clientId]);
 
@@ -285,11 +386,36 @@ async function getMarketingUsers() {
 /**
  * Get total count of clients
  */
-async function getTotalClientsCount() {
-    return withCache(generateCacheKey("clients_count"), DEFAULT_TTL.CUSTOMERS, async () => {
+async function getTotalClientsCount(user = null) {
+    const isAdmin = isUserAdmin(user);
+    const userScope = isAdmin ? "admin_all" : `user_${user?.id || user?.username || "all"}`;
+
+    return withCache(generateCacheKey("clients_count", { scope: userScope }), DEFAULT_TTL.CUSTOMERS, async () => {
         try {
-            const query = `SELECT COUNT(*)::int as total FROM clients`;
-            const result = await pgQuery(query);
+            let query = `
+                SELECT COUNT(*)::int as total
+                FROM clients t
+                LEFT JOIN users t1 ON t.sales_person_id = t1.id
+            `;
+            const values = [];
+
+            if (!isAdmin && user) {
+                const userId = Number.parseInt(user.id, 10);
+                const userName = (user.user_name || user.username || "").trim();
+
+                if (Number.isInteger(userId) && userId > 0 && userName) {
+                    query += ` WHERE (t.sales_person_id = $1 OR LOWER(TRIM(COALESCE(t1.user_name, ''))) = LOWER(TRIM($2)))`;
+                    values.push(userId, userName);
+                } else if (Number.isInteger(userId) && userId > 0) {
+                    query += ` WHERE t.sales_person_id = $1`;
+                    values.push(userId);
+                } else if (userName) {
+                    query += ` WHERE LOWER(TRIM(COALESCE(t1.user_name, ''))) = LOWER(TRIM($1))`;
+                    values.push(userName);
+                }
+            }
+
+            const result = await pgQuery(query, values);
             return result.rows[0].total;
         } catch (err) {
             console.error("Error fetching clients count:", err);
@@ -306,6 +432,7 @@ module.exports = {
     deleteClient,
     getMarketingUsers,
     getTotalClientsCount,
-    invalidateClientsCache
+    invalidateClientsCache,
+    isUserAdmin
 };
 
