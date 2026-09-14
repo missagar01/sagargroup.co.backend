@@ -475,7 +475,7 @@ export const getDashboardData = async (req, res) => {
     }
 
     // ORDER + PAGINATION
-    query += ` ORDER BY task_start_date ASC, id ASC LIMIT ${limit} OFFSET ${offset}`;
+    query += ` ORDER BY task_start_date ASC LIMIT ${limit} OFFSET ${offset}`;
 
     log("FINAL QUERY =>", query);
 
