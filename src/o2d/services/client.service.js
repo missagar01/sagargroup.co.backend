@@ -12,12 +12,14 @@ function isUserAdmin(user) {
     if (!user) return false;
     const role = (user.role || "").toString().toLowerCase();
     const userType = (user.userType || "").toString().toLowerCase();
+    const username = (user.user_name || user.username || "").toString().trim().toLowerCase();
     return (
         role === "admin" ||
         role === "all access" ||
         role.includes("all access") ||
         userType === "admin" ||
-        userType === "all access"
+        userType === "all access" ||
+        username === "admin"
     );
 }
 
