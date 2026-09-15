@@ -38,7 +38,8 @@ function todayKey() {
 async function getClients(options = {}, user = null) {
     const {
         excludeFollowedToday = false,
-        fresh = false
+        fresh = false,
+        search = ""
     } = options;
 
     const isAdmin = isUserAdmin(user);
@@ -47,7 +48,8 @@ async function getClients(options = {}, user = null) {
     const cacheKey = generateCacheKey("clients", {
         excludeFollowedToday: excludeFollowedToday ? 1 : 0,
         day: todayKey(),
-        scope: userScope
+        scope: userScope,
+        search: String(search || "").trim().toLowerCase()
     });
 
     const fetchClients = async () => {
@@ -55,8 +57,17 @@ async function getClients(options = {}, user = null) {
             const conditions = [];
             const values = [];
 
-            if (excludeFollowedToday) {
-                conditions.push("ft.client_name IS NULL");
+            const normalizedSearch = String(search || "").trim();
+            if (normalizedSearch) {
+                values.push(`%${normalizedSearch.toLowerCase()}%`);
+                const p = `$${values.length}`;
+                conditions.push(`(
+                    LOWER(COALESCE(t.client_name, '')) LIKE ${p} OR
+                    LOWER(COALESCE(t.contact_person, '')) LIKE ${p} OR
+                    LOWER(COALESCE(t.contact_details, '')) LIKE ${p} OR
+                    LOWER(COALESCE(t.city, '')) LIKE ${p} OR
+                    LOWER(COALESCE(t1.user_name, '')) LIKE ${p}
+                )`);
             }
 
             if (!isAdmin && user) {
@@ -81,6 +92,7 @@ async function getClients(options = {}, user = null) {
             const whereClause = conditions.length > 0
                 ? `WHERE ${conditions.join(" AND ")}`
                 : "";
+            const limitClause = normalizedSearch ? "LIMIT 500" : "";
 
             const query = `
                 SELECT
@@ -93,21 +105,43 @@ async function getClients(options = {}, user = null) {
                     t.client_type,
                     t.status,
                     t.created_at,
-                    t1.user_name as sales_person,
-                    (ft.client_name IS NOT NULL) AS followed_up_today
+                    t1.user_name as sales_person
                 FROM clients t
                 LEFT JOIN users t1 ON t.sales_person_id = t1.id
-                LEFT JOIN (
-                    SELECT DISTINCT LOWER(TRIM(cf.client_name)) AS client_name
-                    FROM client_followups cf
-                    WHERE cf.date_of_calling::date = CURRENT_DATE
-                ) ft ON ft.client_name = LOWER(TRIM(t.client_name))
                 ${whereClause}
                 ORDER BY LOWER(TRIM(COALESCE(t.client_name, ''))) ASC, t.client_id ASC
+                ${limitClause}
             `;
 
             const result = await pgQuery(query, values);
-            return result.rows;
+            const clientRows = result.rows;
+            const clientNames = Array.from(new Set(
+                clientRows
+                    .map((row) => String(row.client_name || "").trim().toLowerCase())
+                    .filter(Boolean)
+            ));
+
+            if (clientNames.length === 0) {
+                return [];
+            }
+
+            const followedResult = await pgQuery(
+                `SELECT DISTINCT LOWER(TRIM(client_name)) AS client_name
+                 FROM client_followups
+                 WHERE date_of_calling >= CURRENT_DATE
+                   AND date_of_calling < CURRENT_DATE + INTERVAL '1 day'
+                   AND LOWER(TRIM(client_name)) = ANY($1::text[])`,
+                [clientNames]
+            );
+            const followedNames = new Set(followedResult.rows.map((row) => row.client_name));
+            const withFollowupStatus = clientRows.map((row) => ({
+                ...row,
+                followed_up_today: followedNames.has(String(row.client_name || "").trim().toLowerCase())
+            }));
+
+            return excludeFollowedToday
+                ? withFollowupStatus.filter((row) => !row.followed_up_today)
+                : withFollowupStatus;
         } catch (err) {
             console.error("Error fetching clients:", err);
             throw err;

@@ -11,16 +11,16 @@ function parseBooleanFlag(value) {
 
 async function getAllClients(req, res) {
     try {
-        const fresh = parseBooleanFlag(req.query.fresh);
+        const useCache = parseBooleanFlag(req.query.cache);
+        const fresh = !useCache || parseBooleanFlag(req.query.fresh);
         const clients = await clientService.getClients({
             excludeFollowedToday: parseBooleanFlag(req.query.excludeFollowedToday),
-            fresh
+            fresh,
+            search: req.query.search
         }, req.user);
-        if (fresh) {
-            res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-            res.set("Pragma", "no-cache");
-            res.set("Expires", "0");
-        }
+        res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+        res.set("Pragma", "no-cache");
+        res.set("Expires", "0");
         res.status(200).json({ success: true, data: clients });
     } catch (err) {
         res.status(err.statusCode || 500).json({ success: false, message: err.message });
