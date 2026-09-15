@@ -30,7 +30,7 @@ async function getAllFollowups(username, role) {
         try {
             let query = `
                 SELECT 
-                    followup_id, 
+                    followup_id,
                     client_name, 
                     sales_person, 
                     actual_order, 

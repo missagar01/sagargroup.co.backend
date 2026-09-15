@@ -34,6 +34,11 @@ const MAX_SSH_RECONNECT_ATTEMPTS = parseInt(
   10
 );
 const MAX_BACKOFF_MS = 30000;
+const BACKOFF_JITTER_RATIO = 0.2;
+const IDLE_RETRY_INTERVAL_MS = parseInt(
+  process.env.SSH_IDLE_RETRY_INTERVAL_MS || "120000",
+  10
+);
 const PORT_SCAN_LIMIT = parseInt(
   process.env.SSH_LOCAL_PORT_SCAN_LIMIT || "10",
   10
@@ -86,6 +91,11 @@ function getNonNegativeInteger(value, fallbackValue) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withJitter(ms) {
+  const jitter = ms * BACKOFF_JITTER_RATIO * (Math.random() * 2 - 1);
+  return Math.max(1000, Math.round(ms + jitter));
 }
 
 function emitTunnelState(type, details = {}) {
@@ -637,19 +647,29 @@ async function scheduleReconnect() {
 
   if (reconnectAttempts >= MAX_SSH_RECONNECT_ATTEMPTS) {
     console.error(
-      `[SSH] SSH permanently disabled after ${MAX_SSH_RECONNECT_ATTEMPTS} failures.`
+      `[SSH] SSH failed ${MAX_SSH_RECONNECT_ATTEMPTS} times in a row; backing off to a slow retry every ${IDLE_RETRY_INTERVAL_MS / 1000}s.`
     );
     console.error(
       "[SSH] Please check your network, SSH credentials, or remote server status."
     );
+
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      reconnectAttempts = 0;
+      resetBackoff();
+      void initSSHTunnel().catch((error) => {
+        console.error("[SSH] Idle reconnect attempt failed:", error.message || error);
+        void scheduleReconnect();
+      });
+    }, IDLE_RETRY_INTERVAL_MS);
     return;
   }
 
-  const waitMs = Math.min(reconnectDelayMs, MAX_BACKOFF_MS);
+  const waitMs = withJitter(Math.min(reconnectDelayMs, MAX_BACKOFF_MS));
   reconnectAttempts += 1;
 
   console.warn(
-    `[SSH] Scheduling SSH reconnect (${reconnectAttempts}/${MAX_SSH_RECONNECT_ATTEMPTS}) in ${waitMs / 1000}s...`
+    `[SSH] Scheduling SSH reconnect (${reconnectAttempts}/${MAX_SSH_RECONNECT_ATTEMPTS}) in ${Math.round(waitMs / 1000)}s...`
   );
 
   reconnectTimer = setTimeout(() => {
@@ -688,8 +708,8 @@ async function initSSHTunnel() {
           throw error;
         }
 
-        const waitMs = Math.min(2000 * attempt, MAX_BACKOFF_MS);
-        console.log(`[SSH] Retrying SSH tunnel in ${waitMs / 1000}s...`);
+        const waitMs = withJitter(Math.min(5000 * attempt, MAX_BACKOFF_MS));
+        console.log(`[SSH] Retrying SSH tunnel in ${Math.round(waitMs / 1000)}s...`);
         await delay(waitMs);
         attempt += 1;
       }
