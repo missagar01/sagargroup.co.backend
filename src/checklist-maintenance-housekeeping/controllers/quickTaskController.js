@@ -163,25 +163,49 @@ export const fetchMaintenance = async (
     const whereClause = filters.join(" AND ");
 
     const dataQuery = `
-      SELECT DISTINCT ON (LOWER(COALESCE(doer_name, '')), LOWER(COALESCE(description, '')))
-        id AS task_id,
-        COALESCE(doer_department, machine_department) AS department,
+      WITH ranked_tasks AS (
+        SELECT
+          id AS task_id,
+          COALESCE(doer_department, machine_department) AS department,
+          given_by,
+          doer_name AS name,
+          description AS task_description,
+          task_start_date,
+          actual_date AS submission_date,
+          frequency,
+          task_type,
+          priority,
+          machine_name,
+          serial_no,
+          task_status AS status,
+          ROW_NUMBER() OVER (
+            PARTITION BY
+              LOWER(TRIM(COALESCE(doer_name, ''))),
+              LOWER(REGEXP_REPLACE(TRIM(COALESCE(description, '')), '\\s+', ' ', 'g'))
+            ORDER BY task_start_date ASC, id ASC
+          ) AS rn
+        FROM maintenance_task_assign
+        WHERE ${whereClause}
+      )
+      SELECT
+        task_id,
+        department,
         given_by,
-        doer_name AS name,
-        description AS task_description,
+        name,
+        task_description,
         task_start_date,
-        actual_date AS submission_date,
+        submission_date,
         frequency,
         task_type,
         priority,
         machine_name,
         serial_no,
-        task_status AS status
-      FROM maintenance_task_assign
-      WHERE ${whereClause}
+        status
+      FROM ranked_tasks
+      WHERE rn = 1
       ORDER BY
-        LOWER(COALESCE(doer_name, '')),
-        LOWER(COALESCE(description, '')),
+        LOWER(TRIM(COALESCE(name, ''))),
+        LOWER(REGEXP_REPLACE(TRIM(COALESCE(task_description, '')), '\\s+', ' ', 'g')),
         task_start_date ASC
       LIMIT $${paramIndex++}
       OFFSET $${paramIndex}
@@ -194,7 +218,9 @@ export const fetchMaintenance = async (
         SELECT 1
         FROM maintenance_task_assign
         WHERE ${whereClause}
-        GROUP BY LOWER(COALESCE(doer_name, '')), LOWER(COALESCE(description, ''))
+        GROUP BY
+          LOWER(TRIM(COALESCE(doer_name, ''))),
+          LOWER(REGEXP_REPLACE(TRIM(COALESCE(description, '')), '\\s+', ' ', 'g'))
       ) AS subquery
     `;
 
