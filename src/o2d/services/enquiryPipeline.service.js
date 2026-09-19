@@ -16,6 +16,7 @@ const ENQUIRY_FIELDS = [
   "sales_person",
   "city",
   "state",
+  "order_quantity",
 ];
 
 const ENQ_NO_PREFIX = "ENQ-";
@@ -62,10 +63,10 @@ async function createEnquiry(data) {
       WHERE enq_no LIKE $${enqNoPrefixParam}::text || '%'
     )
     INSERT INTO enquiry (
-      enq_no, name, company_name, mobile, email, requirement, sales_person, city, state,
+      enq_no, name, company_name, mobile, email, requirement, sales_person, city, state, order_quantity,
       created_at, fm_planned
     )
-    SELECT next_no.enq_no, $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW() + INTERVAL '24 hours'
+    SELECT next_no.enq_no, $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW() + INTERVAL '24 hours'
     FROM next_no
     RETURNING *
   `;
@@ -109,11 +110,9 @@ async function updateEnquiry(id, data, username, role) {
     "requirement",
     "city",
     "state",
+    "order_quantity",
+    "sales_person",
   ];
-
-  if (isAdminRole(role)) {
-    fields.push("sales_person");
-  }
 
   const values = fields.map((field) => data[field] ?? null);
   const setClause = fields
@@ -139,7 +138,7 @@ async function deleteEnquiry(id, username, role) {
   return row;
 }
 
-async function markStageComplete(id, stage, username, role) {
+async function markStageComplete(id, stage, username, role, data = {}) {
   if (!STAGE_ORDER.includes(stage)) {
     const err = new Error(`Invalid stage "${stage}"`);
     err.statusCode = 400;
@@ -164,18 +163,28 @@ async function markStageComplete(id, stage, username, role) {
   }
 
   const next = nextStage(stage);
-  const query = next
+  const params = [id];
+  const query = stage === "close"
+    ? (() => {
+        params.push(data.order_quantity);
+        return `UPDATE enquiry
+          SET ${actualCol(stage)} = NOW(),
+              order_quantity = $2
+        WHERE id = $1
+        RETURNING *`;
+      })()
+    : next
     ? `UPDATE enquiry
          SET ${actualCol(stage)} = NOW(),
              ${plannedCol(next)} = NOW() + INTERVAL '24 hours'
        WHERE id = $1
        RETURNING *`
     : `UPDATE enquiry
-         SET ${actualCol(stage)} = NOW()
-       WHERE id = $1
-       RETURNING *`;
+          SET ${actualCol(stage)} = NOW()
+        WHERE id = $1
+        RETURNING *`;
 
-  const result = await pgQuery(query, [id]);
+  const result = await pgQuery(query, params);
   return computeEnquiryStatus(result.rows[0]);
 }
 

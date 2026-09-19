@@ -410,7 +410,14 @@ async function deleteClient(clientId, user = null) {
  */
 async function getMarketingUsers() {
     try {
-        const query = `SELECT id, user_name, department FROM users WHERE department = 'MARKETING' ORDER BY user_name ASC`;
+        const query = `
+            SELECT id, user_name, department
+            FROM users
+            WHERE LOWER(TRIM(department)) = 'marketing'
+              AND user_name IS NOT NULL
+              AND TRIM(user_name) <> ''
+            ORDER BY user_name ASC
+        `;
         const result = await pgQuery(query);
         return result.rows;
     } catch (err) {
