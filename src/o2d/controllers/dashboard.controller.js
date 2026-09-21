@@ -1,4 +1,5 @@
 const { getDashboardData } = require("../services/dashboard.service.js");
+const { getCustomerDispatchTiers } = require("../services/dispatchTier.service.js");
 
 async function fetchDashboardSummary(req, res) {
   try {
@@ -42,4 +43,33 @@ async function fetchAnalyticsMetrics(req, res) {
   }
 }
 
-module.exports = { fetchDashboardSummary, fetchAnalyticsMetrics };
+async function fetchCustomerDispatchTiers(req, res) {
+  try {
+    const fromDate = req.query.fromDate || null;
+    const toDate = req.query.toDate || null;
+
+    const data = await getCustomerDispatchTiers({
+      fromDate,
+      toDate,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    console.error("❌ Customer dispatch tiers error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch customer dispatch tiers",
+      error: error.message,
+    });
+  }
+}
+
+module.exports = {
+  fetchDashboardSummary,
+  fetchAnalyticsMetrics,
+  fetchCustomerDispatchTiers,
+};
+
