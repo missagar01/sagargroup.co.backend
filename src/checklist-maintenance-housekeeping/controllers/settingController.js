@@ -334,6 +334,34 @@ export const updateUser = async (req, res) => {
 
     const result = await pool.query(query, values);
 
+    // Cascade name update to checklist, maintenance_task_assign, and delegation
+    const oldUserName = existingResult.rows[0]?.user_name;
+    const newUserName = updates.user_name;
+
+    if (
+      newUserName &&
+      oldUserName &&
+      oldUserName.trim().toLowerCase() !== newUserName.trim().toLowerCase()
+    ) {
+      const trimmedOld = oldUserName.trim();
+      const trimmedNew = newUserName.trim();
+
+      await Promise.all([
+        pool.query(
+          `UPDATE checklist SET name = $1 WHERE LOWER(TRIM(name)) = LOWER(TRIM($2))`,
+          [trimmedNew, trimmedOld]
+        ),
+        pool.query(
+          `UPDATE maintenance_task_assign SET doer_name = $1 WHERE LOWER(TRIM(doer_name)) = LOWER(TRIM($2))`,
+          [trimmedNew, trimmedOld]
+        ),
+        pool.query(
+          `UPDATE delegation SET name = $1 WHERE LOWER(TRIM(name)) = LOWER(TRIM($2))`,
+          [trimmedNew, trimmedOld]
+        )
+      ]);
+    }
+
     res.json(result.rows[0]);
 
   } catch (error) {
