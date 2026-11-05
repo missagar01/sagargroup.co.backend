@@ -17,7 +17,12 @@ const documentRoutes = require("./document/router.cjs");
 const transportRoutes = require("./transport/router.cjs");
 const checklistMaintenanceRoutes = require("./checklist-maintenance-housekeeping/router.cjs");
 const projectRoutes = require("./project/router.cjs");
-const { router: iotRoutes } = require("./iot");
+const LEGACY_IOT_MODULE_ENABLED =
+  process.env.ENABLE_IOT_MODULE !== "false";
+const IOT_MQTT_DASHBOARD_ENABLED =
+  LEGACY_IOT_MODULE_ENABLED &&
+  process.env.ENABLE_IOT_MQTT_DASHBOARD === "true";
+const iotRoutes = IOT_MQTT_DASHBOARD_ENABLED ? require("./iot").router : null;
 
 const corsOriginsEnv = process.env.CORS_ORIGINS;
 const corsOrigins = corsOriginsEnv
@@ -92,7 +97,9 @@ apiRouter.use("/gatepass", gatepassRoutes);
 apiRouter.use("/store", storeRoutes);
 apiRouter.use("/document", documentRoutes);
 apiRouter.use("/transport", transportRoutes);
-apiRouter.use("/iot", iotRoutes);
+if (IOT_MQTT_DASHBOARD_ENABLED && iotRoutes) {
+  apiRouter.use("/iot", iotRoutes);
+}
 apiRouter.use("/", checklistMaintenanceRoutes);
 apiRouter.use("/", projectRoutes);
 apiRouter.use("/auth", sharedAuthRoutes);

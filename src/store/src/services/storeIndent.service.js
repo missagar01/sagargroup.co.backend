@@ -5,6 +5,23 @@ import { getOrSetCache, deleteCache, cacheKeys, DEFAULT_TTL } from "./redisCache
 
 const DEFAULT_INDENT_FROM_DATE = "2025-04-01";
 const DASHBOARD_FROM_DATE = "DATE '2025-04-01'";
+
+// The ERP's div_code resolves (via lhs_utility.get_name) to a display name
+// that doesn't always match the users.division value for the same physical
+// division. Maps a user's division (users.division, uppercased) to the ERP
+// display name that appears as `division` in view_indent_engine rows.
+const DIVISION_DISPLAY_NAME_BY_USER_DIVISION = {
+  "PIPE MILL": "PIPE MILL",
+  "STRIP MILL": "PATRA ROLLING MILL",
+  SMS: "STEEL MELTING SHOP (SMS)",
+  COMMERCIAL: "CORPORATE/COMMON",
+};
+
+function resolveDivisionDisplayName(userDivision) {
+  const normalized = String(userDivision || "").trim().toUpperCase();
+  if (!normalized) return null;
+  return DIVISION_DISPLAY_NAME_BY_USER_DIVISION[normalized] || normalized;
+}
 const DASHBOARD_INDENT_WHERE = `
       t.entity_code = 'SR'
       AND t.vrdate >= ${DASHBOARD_FROM_DATE}
@@ -60,11 +77,14 @@ export async function invalidateIndentCaches() {
    PENDING INDENTS (NO PAGINATION)
    ============================ */
 
-export async function getPending(fromDate = null) {
+export async function getPending(fromDate = null, userDivision = null) {
   const resolvedFromDate = resolveIndentFromDate(fromDate);
+  const divisionDisplayName = resolveDivisionDisplayName(userDivision);
 
   return await getOrSetCache(
-    cacheKeys.indentPending(normalizeCacheScope(resolvedFromDate)),
+    cacheKeys.indentPending(
+      `${normalizeCacheScope(resolvedFromDate)}:${divisionDisplayName || "all"}`
+    ),
     async () => {
       const conn = await getConnection();
       try {
@@ -73,12 +93,13 @@ export async function getPending(fromDate = null) {
           AND t.po_no IS NULL
           AND t.cancelleddate IS NULL
           AND t.vrdate >= TO_DATE(:fromDate, 'YYYY-MM-DD')
+          ${divisionDisplayName ? "AND UPPER(lhs_utility.get_name('div_code', t.div_code)) = UPPER(:divisionDisplayName)" : ""}
         `;
 
         const sql = `
           SELECT
             t.lastupdate + INTERVAL '3' DAY AS plannedtimestamp,
-            t.acknowledgedate,  
+            t.acknowledgedate,
             lhs_utility.get_name('user_code',t.acknowledgeby) as purchaser,
             t.vrno AS indent_number,
             t.vrdate AS indent_date,
@@ -96,7 +117,10 @@ export async function getPending(fromDate = null) {
           ORDER BY t.vrdate DESC, t.vrno DESC
         `;
 
-        const result = await conn.execute(sql, { fromDate: resolvedFromDate }, {
+        const binds = { fromDate: resolvedFromDate };
+        if (divisionDisplayName) binds.divisionDisplayName = divisionDisplayName;
+
+        const result = await conn.execute(sql, binds, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         });
 
@@ -113,11 +137,14 @@ export async function getPending(fromDate = null) {
    HISTORY INDENTS (NO PAGINATION)
    ============================ */
 
-export async function getHistory(fromDate = null) {
+export async function getHistory(fromDate = null, userDivision = null) {
   const resolvedFromDate = resolveIndentFromDate(fromDate);
+  const divisionDisplayName = resolveDivisionDisplayName(userDivision);
 
   return await getOrSetCache(
-    cacheKeys.indentHistory(normalizeCacheScope(resolvedFromDate)),
+    cacheKeys.indentHistory(
+      `${normalizeCacheScope(resolvedFromDate)}:${divisionDisplayName || "all"}`
+    ),
     async () => {
       const conn = await getConnection();
       try {
@@ -165,10 +192,14 @@ export async function getHistory(fromDate = null) {
         FROM view_indent_engine t
         WHERE t.entity_code = 'SR'
           AND t.vrdate >= TO_DATE(:fromDate, 'YYYY-MM-DD')
+          ${divisionDisplayName ? "AND UPPER(lhs_utility.get_name('div_code', t.div_code)) = UPPER(:divisionDisplayName)" : ""}
         ORDER BY t.vrdate DESC, t.vrno DESC
         `;
 
-        const result = await conn.execute(sql, { fromDate: resolvedFromDate }, {
+        const binds = { fromDate: resolvedFromDate };
+        if (divisionDisplayName) binds.divisionDisplayName = divisionDisplayName;
+
+        const result = await conn.execute(sql, binds, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
         });
 

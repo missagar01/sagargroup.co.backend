@@ -23,11 +23,26 @@ const { getPgPool, closePgPool, resetPool } = require("./config/pg.js");
 const { connectDatabase, connectAuthDatabase } = require("./config/database.js");
 const { initSSHTunnel, closeSSHTunnel } = require("./config/sshTunnel.js");
 const redisClient = require("./config/redis.js");
-const {
-  getSocketCorsOptions,
-  initializeIotModule,
-  shutdownIotModule,
-} = require("./src/iot");
+const LEGACY_IOT_MODULE_ENABLED =
+  process.env.ENABLE_IOT_MODULE !== "false";
+const IOT_MQTT_DASHBOARD_ENABLED =
+  LEGACY_IOT_MODULE_ENABLED &&
+  process.env.ENABLE_IOT_MQTT_DASHBOARD === "true";
+let getSocketCorsOptions = () => ({ origin: true, methods: ["GET", "POST"] });
+let initializeIotModule = async () => {};
+let shutdownIotModule = async () => {};
+
+if (IOT_MQTT_DASHBOARD_ENABLED) {
+  ({
+    getSocketCorsOptions,
+    initializeIotModule,
+    shutdownIotModule,
+  } = require("./src/iot"));
+} else {
+  console.log(
+    "IoT MQTT dashboard disabled. Set ENABLE_IOT_MQTT_DASHBOARD=true to enable it."
+  );
+}
 
 const port = Number(process.env.PORT || 3004); // Server Port
 const DEPLOY_MODE = process.env.DEPLOY_MODE === "true";

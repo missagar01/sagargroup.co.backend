@@ -17,21 +17,21 @@ let cacheExpiresAt = 0;
 let inFlightRequest = null;
 
 const HEADER_ALIASES = {
-  timestamp: ["Timestamp"],
-  supplierName: ["Supplier Name"],
-  gstNo: ["GST NO", "GST No"],
-  correspondenceAddress: ["Correspondence Address"],
-  factoryOrFirmName: ["Factory or Firm Name"],
-  yearOfEstablishment: ["Year of Establishment"],
-  productType: ["Product Type"],
-  mobileNumber: ["Mobile Number"],
-  email: ["Email"],
-  typeOfBusiness: ["Type of Business"],
-  clientNames: ["Name of Clients"],
-  companyOwnerName: ["Name Of Company Owner", "Name of Company Owner"],
-  ownerEmail: ["Email address", "Owner Email", "Email Address"],
-  vendorRegistrationNumber: ["Vendor Registration Number"],
-  whatsappStatus: ["WhatsAppStatus", "WhatsApp Status"],
+  timestamp: ["Timestamp", "timestamp"],
+  supplierName: ["Supplier Name", "Vendor Name", "supplierName", "vendorName"],
+  gstNo: ["GST NO", "GST No", "gstNo"],
+  correspondenceAddress: ["Correspondence Address", "correspondenceAddress"],
+  factoryOrFirmName: ["Factory or Firm Name", "Company Name", "factoryOrFirmName", "companyName"],
+  yearOfEstablishment: ["Year of Establishment", "yearOfEstablishment"],
+  productType: ["Product Type", "productType"],
+  mobileNumber: ["Mobile Number", "mobileNumber"],
+  email: ["Email", "email"],
+  typeOfBusiness: ["Type of Business", "typeOfBusiness"],
+  clientNames: ["Name of Clients", "clientNames"],
+  companyOwnerName: ["Name Of Company Owner", "Name of Company Owner", "companyOwnerName"],
+  ownerEmail: ["Email address", "Owner Email", "Email Address", "ownerEmail"],
+  vendorRegistrationNumber: ["Vendor Registration Number", "vendorRegistrationNumber"],
+  whatsappStatus: ["WhatsAppStatus", "WhatsApp Status", "whatsappStatus"],
 };
 
 const normalizeHeader = (value) =>
@@ -58,11 +58,34 @@ const buildHeaderIndex = (headers = []) => {
   return indexMap;
 };
 
+const buildObjectKeyMap = (record = {}) => {
+  const keyMap = new Map();
+
+  Object.keys(record || {}).forEach((key) => {
+    const normalized = normalizeHeader(key);
+    if (normalized && !keyMap.has(normalized)) {
+      keyMap.set(normalized, key);
+    }
+  });
+
+  return keyMap;
+};
+
 const getValueByHeaders = (row, headerIndex, aliases = []) => {
   for (const alias of aliases) {
     const matchedIndex = headerIndex.get(normalizeHeader(alias));
     if (matchedIndex !== undefined) {
       return row[matchedIndex];
+    }
+  }
+  return null;
+};
+
+const getValueByObjectAliases = (record, keyMap, aliases = []) => {
+  for (const alias of aliases) {
+    const matchedKey = keyMap.get(normalizeHeader(alias));
+    if (matchedKey !== undefined) {
+      return record?.[matchedKey];
     }
   }
   return null;
@@ -117,25 +140,131 @@ const normalizeVendorRow = (row, headerIndex, index) => {
   return hasContent ? normalized : null;
 };
 
-const normalizeSheetPayload = (payload) => {
-  const sheetData = Array.isArray(payload?.data) ? payload.data : [];
-  const [headerRow, ...dataRows] = sheetData.filter(Array.isArray);
+const sortVendorRecords = (records = []) =>
+  records.sort((left, right) => {
+    const leftTs = new Date(left.timestamp || 0).getTime();
+    const rightTs = new Date(right.timestamp || 0).getTime();
+    return rightTs - leftTs;
+  });
+
+const normalizeVendorObjectRecord = (record, index) => {
+  const keyMap = buildObjectKeyMap(record);
+  const timestamp = asText(
+    getValueByObjectAliases(record, keyMap, HEADER_ALIASES.timestamp)
+  );
+  const supplierName = asText(
+    getValueByObjectAliases(record, keyMap, HEADER_ALIASES.supplierName)
+  );
+  const vendorRegistrationNumber = asText(
+    getValueByObjectAliases(
+      record,
+      keyMap,
+      HEADER_ALIASES.vendorRegistrationNumber
+    )
+  );
+
+  const normalized = {
+    id: `${asKeyPart(vendorRegistrationNumber)}-${asKeyPart(timestamp)}-${asKeyPart(
+      supplierName
+    )}-${index + 1}`,
+    timestamp,
+    supplierName,
+    gstNo: asText(getValueByObjectAliases(record, keyMap, HEADER_ALIASES.gstNo)),
+    correspondenceAddress: asText(
+      getValueByObjectAliases(record, keyMap, HEADER_ALIASES.correspondenceAddress)
+    ),
+    factoryOrFirmName: asText(
+      getValueByObjectAliases(record, keyMap, HEADER_ALIASES.factoryOrFirmName)
+    ),
+    yearOfEstablishment: asText(
+      getValueByObjectAliases(record, keyMap, HEADER_ALIASES.yearOfEstablishment)
+    ),
+    productType: asText(
+      getValueByObjectAliases(record, keyMap, HEADER_ALIASES.productType)
+    ),
+    mobileNumber: asText(
+      getValueByObjectAliases(record, keyMap, HEADER_ALIASES.mobileNumber)
+    ),
+    email: asText(getValueByObjectAliases(record, keyMap, HEADER_ALIASES.email)),
+    typeOfBusiness: asText(
+      getValueByObjectAliases(record, keyMap, HEADER_ALIASES.typeOfBusiness)
+    ),
+    clientNames: asText(
+      getValueByObjectAliases(record, keyMap, HEADER_ALIASES.clientNames)
+    ),
+    companyOwnerName: asText(
+      getValueByObjectAliases(record, keyMap, HEADER_ALIASES.companyOwnerName)
+    ),
+    ownerEmail: asText(
+      getValueByObjectAliases(record, keyMap, HEADER_ALIASES.ownerEmail)
+    ),
+    vendorRegistrationNumber,
+    whatsappStatus: asText(
+      getValueByObjectAliases(record, keyMap, HEADER_ALIASES.whatsappStatus)
+    ).toUpperCase(),
+  };
+
+  const hasContent = Object.entries(normalized).some(
+    ([key, value]) => key !== "id" && String(value || "").trim() !== ""
+  );
+
+  return hasContent ? normalized : null;
+};
+
+const normalizeSheetPayload = (sheetData = []) => {
+  const [headerRow, ...dataRows] = (sheetData || []).filter(Array.isArray);
 
   if (!Array.isArray(headerRow) || headerRow.length === 0) {
     throw new Error("Vendor registration sheet response is missing header row");
   }
 
   const headerIndex = buildHeaderIndex(headerRow);
-  const records = dataRows
-    .map((row, index) => normalizeVendorRow(row, headerIndex, index))
-    .filter(Boolean)
-    .sort((left, right) => {
-      const leftTs = new Date(left.timestamp || 0).getTime();
-      const rightTs = new Date(right.timestamp || 0).getTime();
-      return rightTs - leftTs;
-    });
+  const records = sortVendorRecords(
+    dataRows
+      .map((row, index) => normalizeVendorRow(row, headerIndex, index))
+      .filter(Boolean)
+  );
 
   return records;
+};
+
+const normalizeObjectPayload = (rows = []) =>
+  sortVendorRecords(
+    (rows || [])
+      .map((record, index) => normalizeVendorObjectRecord(record, index))
+      .filter(Boolean)
+  );
+
+const getPayloadRows = (payload) => {
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.rows)) return payload.rows;
+  if (Array.isArray(payload?.records)) return payload.records;
+  if (Array.isArray(payload)) return payload;
+  return null;
+};
+
+const normalizeVendorPayload = (payload) => {
+  const rows = getPayloadRows(payload);
+
+  if (!Array.isArray(rows)) {
+    throw new Error("Unexpected vendor registration response format");
+  }
+
+  if (rows.length === 0) {
+    return [];
+  }
+
+  const firstRow = rows[0];
+
+  if (Array.isArray(firstRow)) {
+    return normalizeSheetPayload(rows);
+  }
+
+  if (firstRow && typeof firstRow === "object") {
+    return normalizeObjectPayload(rows);
+  }
+
+  throw new Error("Unexpected vendor registration response format");
 };
 
 const fetchVendorRegistrationsFromSource = async () => {
@@ -155,11 +284,17 @@ const fetchVendorRegistrationsFromSource = async () => {
   const payload =
     typeof response.data === "string" ? JSON.parse(response.data) : response.data;
 
-  if (!payload || payload.status !== "success" || !Array.isArray(payload.data)) {
+  const hasExplicitFailure =
+    payload?.success === false ||
+    String(payload?.status || "")
+      .trim()
+      .toLowerCase() === "error";
+
+  if (!payload || hasExplicitFailure) {
     throw new Error("Unexpected vendor registration response format");
   }
 
-  const records = normalizeSheetPayload(payload);
+  const records = normalizeVendorPayload(payload);
   return {
     data: records,
     fetchedAt: new Date().toISOString(),

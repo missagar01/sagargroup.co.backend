@@ -85,6 +85,50 @@ function buildUserFromToken(decoded) {
     };
 }
 
+function parseDelimitedAccess(value) {
+    if (!value || typeof value !== "string") {
+        return [];
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return [];
+    }
+
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) {
+                return parsed
+                    .map((entry) => (typeof entry === "string" ? entry.trim() : String(entry).trim()))
+                    .filter((entry) => entry && entry.toUpperCase() !== "NULL");
+            }
+        } catch {
+            // Fall back to comma-separated parsing.
+        }
+    }
+
+    return trimmed
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry && entry.toUpperCase() !== "NULL");
+}
+
+function normalizeAccessKey(value) {
+    return String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "");
+}
+
+function getNormalizedPageAccessSet(user) {
+    return new Set(
+        parseDelimitedAccess(user?.page_access)
+            .map((entry) => normalizeAccessKey(entry))
+            .filter(Boolean)
+    );
+}
+
 export const protect = async (req, res, next) => {
     // Use Authorization header first so shared login token always wins.
     const token = getHeaderToken(req) || getCookieToken(req);
@@ -162,6 +206,33 @@ export const authorize = (...roles) => {
         const allowedRoles = roles.map((role) => String(role).toLowerCase());
         if (!allowedRoles.includes(userRole)) {
             const error = new Error(`Role ${userRole} is not authorized to access this resource`);
+            error.statusCode = 403;
+            return next(error);
+        }
+
+        next();
+    };
+};
+
+export const authorizePageAccess = (...requiredEntries) => {
+    const allowedEntries = requiredEntries
+        .map((entry) => normalizeAccessKey(entry))
+        .filter(Boolean);
+
+    return (req, res, next) => {
+        const userRole = String(req.user?.role || "").toLowerCase();
+        const userName = String(req.user?.user_name || "").toLowerCase();
+        const isAdmin = userRole === "admin" || userName === "admin";
+
+        if (isAdmin) {
+            return next();
+        }
+
+        const pageAccess = getNormalizedPageAccessSet(req.user);
+        const hasAccess = allowedEntries.some((entry) => pageAccess.has(entry));
+
+        if (!hasAccess) {
+            const error = new Error("You do not have page access to manage announcements");
             error.statusCode = 403;
             return next(error);
         }

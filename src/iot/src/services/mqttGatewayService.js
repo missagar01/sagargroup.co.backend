@@ -11,6 +11,9 @@ class MqttGatewayService {
     this.mqttStatus = 'disconnected';
     this.mqttError = null;
     this.messageHistory = [];
+    this.lastConnectedAt = null;
+    this.lastErrorSignature = null;
+    this.lastErrorLoggedAt = 0;
     this.mqttConfig = {
       brokerUrl: '',
       topics: ['sagarpipe'],
@@ -43,6 +46,7 @@ class MqttGatewayService {
       topics: this.mqttConfig.topics,
       error: this.mqttError,
       historyCount: this.messageHistory.length,
+      lastConnectedAt: this.lastConnectedAt,
       database: postgresPersistenceService.getStatus(),
     };
   }
@@ -128,7 +132,17 @@ class MqttGatewayService {
   connect() {
     if (this.mqttClient) {
       console.log('Closing existing MQTT client connection...');
+      this.mqttClient.removeAllListeners();
       this.mqttClient.end(true);
+      this.mqttClient = null;
+    }
+
+    if (!this.mqttConfig.brokerUrl) {
+      this.mqttStatus = 'disabled';
+      this.mqttError = 'MQTT broker URL is not configured';
+      this.emit('mqtt_status', this.getStatus());
+      console.warn('Skipping MQTT connection because MQTT_BROKER_URL is not configured.');
+      return;
     }
 
     this.mqttStatus = 'connecting';
@@ -162,6 +176,7 @@ class MqttGatewayService {
     this.mqttClient.on('connect', () => {
       this.mqttStatus = 'connected';
       this.mqttError = null;
+      this.lastConnectedAt = new Date().toISOString();
       console.log('MQTT Client connected successfully.');
       this.emit('mqtt_status', this.getStatus());
 
@@ -181,10 +196,16 @@ class MqttGatewayService {
       this.handleIncomingMessage(topic, messageBuffer);
     });
 
+    this.mqttClient.on('reconnect', () => {
+      this.mqttStatus = 'reconnecting';
+      this.emit('mqtt_status', this.getStatus());
+      console.warn(`MQTT reconnect scheduled for broker ${this.mqttConfig.brokerUrl}.`);
+    });
+
     this.mqttClient.on('error', (err) => {
       this.mqttStatus = 'error';
       this.mqttError = err.message;
-      console.error('MQTT Client error:', err);
+      this.logConnectionError(err);
       this.emit('mqtt_status', this.getStatus());
     });
 
@@ -196,11 +217,16 @@ class MqttGatewayService {
     });
 
     this.mqttClient.on('close', () => {
-      if (this.mqttStatus !== 'connecting') {
+      const previousStatus = this.mqttStatus;
+
+      if (!['connecting', 'reconnecting', 'disabled'].includes(previousStatus)) {
         this.mqttStatus = 'disconnected';
       }
 
-      console.log('MQTT Connection closed.');
+      if (['connected', 'offline', 'reconnecting'].includes(previousStatus)) {
+        console.log('MQTT Connection closed.');
+      }
+
       this.emit('mqtt_status', this.getStatus());
     });
   }
@@ -231,8 +257,32 @@ class MqttGatewayService {
   handleFailure(label, err) {
     this.mqttStatus = 'error';
     this.mqttError = err.message;
-    console.error(label, err);
+    this.logConnectionError(err, label);
     this.emit('mqtt_status', this.getStatus());
+  }
+
+  logConnectionError(err, label = 'MQTT Client error:') {
+    const message = err?.message || 'Unknown MQTT error';
+    const signature = `${this.mqttConfig.brokerUrl}|${message}`;
+    const now = Date.now();
+    const shouldThrottle = message === 'connack timeout';
+
+    if (shouldThrottle) {
+      if (signature === this.lastErrorSignature && now - this.lastErrorLoggedAt < 60000) {
+        return;
+      }
+
+      this.lastErrorSignature = signature;
+      this.lastErrorLoggedAt = now;
+      console.warn(
+        `MQTT broker handshake timed out for ${this.mqttConfig.brokerUrl}. Check broker host, port, protocol, firewall, and TLS settings.`
+      );
+      return;
+    }
+
+    this.lastErrorSignature = signature;
+    this.lastErrorLoggedAt = now;
+    console.error(label, err);
   }
 
   emit(eventName, payload) {
@@ -245,7 +295,6 @@ class MqttGatewayService {
 }
 
 module.exports = new MqttGatewayService();
-
 
 
 

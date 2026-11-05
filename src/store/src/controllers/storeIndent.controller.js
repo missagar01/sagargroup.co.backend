@@ -58,6 +58,14 @@ function resolveIndentFromDateQuery(queryValue) {
     : DEFAULT_INDENT_FROM_DATE;
 }
 
+// Only ADMIN sees every division; everyone else is scoped to their own
+// users.division value (mapped to the ERP display name inside the service).
+function resolveUserDivisionFilter(req) {
+  const role = String(req.user?.role || "").toUpperCase();
+  if (role === "ADMIN") return null;
+  return req.user?.division || null;
+}
+
 
 export async function createStoreIndent(req, res) {
   try {
@@ -98,7 +106,7 @@ export async function approveStoreIndent(req, res) {
 export async function getPendingIndents(req, res) {
   try {
     const fromDate = resolveIndentFromDateQuery(req.query.fromDate);
-    const rows = await storeIndentService.getPending(fromDate);
+    const rows = await storeIndentService.getPending(fromDate, resolveUserDivisionFilter(req));
     console.log(`[store indent] pending rows=${rows.length}`);
 
     return res.json({
@@ -117,7 +125,7 @@ export async function getPendingIndents(req, res) {
 export async function getHistory(req, res) {
   try {
     const fromDate = resolveIndentFromDateQuery(req.query.fromDate);
-    const rows = await storeIndentService.getHistory(fromDate);
+    const rows = await storeIndentService.getHistory(fromDate, resolveUserDivisionFilter(req));
     console.log(`[store indent] history rows=${rows.length}`);
 
     return res.json({
@@ -151,7 +159,7 @@ export async function getDashboard(req, res) {
 export async function downloadPendingIndents(req, res) {
   try {
     const fromDate = resolveIndentFromDateQuery(req.query.fromDate);
-    const rows = await storeIndentService.getPending(fromDate);
+    const rows = await storeIndentService.getPending(fromDate, resolveUserDivisionFilter(req));
     await sendRowsAsExcel(res, {
       rows,
       columns: pendingIndentDownloadColumns,
@@ -169,7 +177,7 @@ export async function downloadPendingIndents(req, res) {
 export async function downloadHistoryIndents(req, res) {
   try {
     const fromDate = resolveIndentFromDateQuery(req.query.fromDate);
-    const rows = await storeIndentService.getHistory(fromDate);
+    const rows = await storeIndentService.getHistory(fromDate, resolveUserDivisionFilter(req));
     await sendRowsAsExcel(res, {
       rows,
       columns: historyIndentDownloadColumns,

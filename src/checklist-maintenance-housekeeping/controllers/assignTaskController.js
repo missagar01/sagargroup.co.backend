@@ -1,12 +1,21 @@
 import { pool } from "../config/db.js";
 
+const parseAccessDepartments = (userAccess = "") =>
+  String(userAccess)
+    .split(/[;,]/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+
 // 1️⃣ Departments
 export const getUniqueDepartments = async (req, res) => {
   try {
     const user_name = req.params.user_name;
 
     const user = await pool.query(
-      `SELECT role, user_access FROM users WHERE user_name=$1`,
+      `SELECT role, user_access, department
+       FROM users
+       WHERE LOWER(TRIM(user_name)) = LOWER(TRIM($1))
+       LIMIT 1`,
       [user_name]
     );
 
@@ -24,13 +33,25 @@ export const getUniqueDepartments = async (req, res) => {
       return res.json(result.rows);
     }
 
+    const accessibleDepartments = Array.from(
+      new Set(
+        [user.rows[0].department, ...parseAccessDepartments(user.rows[0].user_access)]
+          .map((value) => value?.trim())
+          .filter(Boolean)
+      )
+    );
+
+    if (accessibleDepartments.length === 0) {
+      return res.json([]);
+    }
+
     const result = await pool.query(
       `SELECT DISTINCT department, division 
        FROM users 
-       WHERE LOWER(department)=LOWER($1)
+       WHERE LOWER(TRIM(department)) = ANY($1::text[])
          AND department IS NOT NULL AND department <> ''
          AND division IS NOT NULL AND division <> ''`,
-      [user.rows[0].user_access]
+      [accessibleDepartments.map((value) => value.toLowerCase())]
     );
 
     return res.json(result.rows);
@@ -44,12 +65,67 @@ export const getUniqueDepartments = async (req, res) => {
 export const getUniqueDivisions = async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT DISTINCT division
-      FROM users
-      WHERE division IS NOT NULL AND division <> ''
-      ORDER BY division ASC
+      SELECT division_name AS division
+      FROM checklist_divisions
+      WHERE status = 'active'
+      ORDER BY division_name ASC
     `);
     res.json(result.rows.map(r => r.division));
+  } catch (e) {
+    console.error(e);
+    res.status(500).send("Server Error");
+  }
+};
+
+export const getUserProfile = async (req, res) => {
+  try {
+    const { user_name } = req.params;
+
+    const result = await pool.query(
+      `SELECT user_name, department, division, given_by, user_access
+       FROM users
+       WHERE LOWER(TRIM(user_name)) = LOWER(TRIM($1))
+       LIMIT 1`,
+      [user_name]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const row = result.rows[0];
+    const accessibleDepartments = Array.from(
+      new Set(
+        [row.department, ...parseAccessDepartments(row.user_access)]
+          .map((value) => value?.trim())
+          .filter(Boolean)
+      )
+    );
+
+    let department = row.department?.trim() || accessibleDepartments[0] || "";
+    let division = row.division?.trim() || "";
+
+    if (!division && department) {
+      const divisionResult = await pool.query(
+        `SELECT division
+         FROM users
+         WHERE LOWER(TRIM(department)) = LOWER(TRIM($1))
+           AND division IS NOT NULL
+           AND division <> ''
+         LIMIT 1`,
+        [department]
+      );
+
+      division = divisionResult.rows[0]?.division?.trim() || "";
+    }
+
+    return res.json({
+      user_name: row.user_name,
+      department,
+      division,
+      given_by: row.given_by || "",
+      accessible_departments: accessibleDepartments,
+    });
   } catch (e) {
     console.error(e);
     res.status(500).send("Server Error");
@@ -80,10 +156,10 @@ export const getUniqueDoerNames = async (req, res) => {
     const result = await pool.query(
       `SELECT DISTINCT user_name
        FROM users 
-       WHERE status='active'
-         AND LOWER(user_access) = LOWER($1)
-         AND user_name IS NOT NULL AND user_name <> ''
-         AND user_name <> 'admin'
+       WHERE LOWER(TRIM(COALESCE(status::text, 'active'))) = 'active'
+         AND user_name IS NOT NULL AND TRIM(user_name) <> ''
+         AND LOWER(TRIM(COALESCE(role::text, ''))) <> 'admin'
+         AND LOWER(TRIM(COALESCE(department, ''))) = LOWER(TRIM($1))
        ORDER BY user_name ASC`,
       [department]
     );

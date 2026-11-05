@@ -20,6 +20,7 @@ const DEFAULT_TTL = {
   REPAIR_FOLLOWUP: 2,
   STORE_GRN: 2,
   GATE_ENTRY: 2,
+  GRN_REPORT: 2,
   STORE_GRN_APPROVAL: 2,
   DEPARTMENTS: 300,
   SETTINGS: 60,
@@ -262,6 +263,13 @@ export const cacheKeys = {
   poHistory: (scope = "all") => buildKey("po", "history", scope),
   indentPending: (scope = "all") => buildKey("indent", "pending", scope),
   indentHistory: (scope = "all") => buildKey("indent", "history", scope),
+  dashboardIndentBundle: (scope = "all") =>
+    buildKey("dashboard", "indent-bundle", scope),
+  dashboardPoBundle: (scope = "all") =>
+    buildKey("dashboard", "po-bundle", scope),
+  dashboardRepairBundle: (scope = "all") =>
+    buildKey("dashboard", "repair-bundle", scope),
+  dashboardFeedbacks: () => buildKey("dashboard", "feedbacks-v7"),
   indentPendingPattern: () => buildPattern("indent", "pending", "*"),
   indentHistoryPattern: () => buildPattern("indent", "history", "*"),
   indentDashboard: () => buildKey("indent", "dashboard"),
@@ -284,6 +292,8 @@ export const cacheKeys = {
   storeGrnPending: () => buildKey("storegrn", "pending"),
   pendingGateEntry: (fromDate, toDate) =>
     buildKey("gateentry", "pending", fromDate, toDate),
+  grnReport: (fromDate, toDate) =>
+    buildKey("grnreport", fromDate, toDate),
   storeGrnApprovalAll: () => buildKey("storegrnapproval", "all"),
   departments: () => buildKey("departments", "all"),
   departmentHod: (department) => buildKey("departments", "hod", department),

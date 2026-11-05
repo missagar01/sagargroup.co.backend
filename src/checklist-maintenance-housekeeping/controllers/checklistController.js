@@ -200,7 +200,14 @@ export const submitChecklistRemarkAndUserStatus = async (req, res) => {
             ? item.status
             : undefined;
 
-        return { taskId, remark, status };
+        const machine_name =
+          Object.prototype.hasOwnProperty.call(item, "machineName")
+            ? item.machineName
+            : Object.prototype.hasOwnProperty.call(item, "machine_name")
+              ? item.machine_name
+              : undefined;
+
+        return { taskId, remark, status, machine_name };
       })
       .filter(Boolean);
 
@@ -211,12 +218,13 @@ export const submitChecklistRemarkAndUserStatus = async (req, res) => {
     const actionableItems = normalizedItems.filter(
       (item) =>
         typeof item.remark !== "undefined" ||
-        typeof item.status !== "undefined"
+        typeof item.status !== "undefined" ||
+        typeof item.machine_name !== "undefined"
     );
 
     if (actionableItems.length === 0) {
       return res.status(400).json({
-        error: "Provide remark or status to update",
+        error: "Provide remark, status, or machine_name to update",
       });
     }
 
@@ -238,6 +246,11 @@ export const submitChecklistRemarkAndUserStatus = async (req, res) => {
         if (typeof item.status !== "undefined") {
           setClauses.push(`status = $${idx++}`);
           values.push(item.status ?? null);
+        }
+
+        if (typeof item.machine_name !== "undefined") {
+          setClauses.push(`machine_name = $${idx++}`);
+          values.push(item.machine_name ?? null);
         }
 
         // ✅ AUTO TIMESTAMP

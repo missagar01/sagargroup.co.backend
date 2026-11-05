@@ -1,6 +1,10 @@
 const { getConnection } = require("../config/db.js");
 const oracledb = require("oracledb");
-const { generateCacheKey, withCache, DEFAULT_TTL } = require("../utils/cacheHelper.js");
+const {
+  generateCacheKey,
+  withCache,
+  DEFAULT_TTL,
+} = require("../utils/cacheHelper.js");
 
 const DELIVERY_STATS_QUERY = `
 WITH raw_data AS (
@@ -133,155 +137,168 @@ ORDER BY t.vrno ASC
 `;
 
 async function getDeliveryStats({ startDate, endDate, salesPerson } = {}) {
-    // Default to Current Month if no dates provided
-    const now = new Date();
-    const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-    const defaultEnd = now.toISOString().slice(0, 10);
+  // Default to Current Month if no dates provided
+  const now = new Date();
+  const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1)
+    .toISOString()
+    .slice(0, 10);
+  const defaultEnd = now.toISOString().slice(0, 10);
 
-    const p_start = startDate || defaultStart;
-    const p_end = endDate || defaultEnd;
-    const p_salesPerson = salesPerson || null;
+  const p_start = startDate || defaultStart;
+  const p_end = endDate || defaultEnd;
+  const p_salesPerson = salesPerson || null;
 
-    const cacheKey = generateCacheKey("delivery_stats_v6", { p_start, p_end, p_salesPerson });
+  const cacheKey = generateCacheKey("delivery_stats_v6", {
+    p_start,
+    p_end,
+    p_salesPerson,
+  });
 
-    return await withCache(cacheKey, DEFAULT_TTL.DASHBOARD, async () => {
-        let connection;
+  return await withCache(cacheKey, DEFAULT_TTL.DASHBOARD, async () => {
+    let connection;
+    try {
+      connection = await getConnection();
+
+      const binds = {
+        startDate: p_start,
+        endDate: p_end,
+        salesPerson: p_salesPerson,
+      };
+
+      const result = await connection.execute(DELIVERY_STATS_QUERY, binds, {
+        outFormat: oracledb.OUT_FORMAT_OBJECT,
+      });
+
+      const row = result.rows && result.rows[0] ? result.rows[0] : {};
+
+      // Extract Monthly/Period Stats
+      const monthlyTotal = row.MONTHLY_TOTAL || 0;
+      const monthlyLate = row.MONTHLY_LATE || 0;
+
+      let monthlyScore = 0;
+      if (monthlyTotal > 0) {
+        // Formula: (Late / Total) * 100
+        monthlyScore = ((monthlyLate / monthlyTotal) * 100).toFixed(2);
+      }
+
+      // Extract Daily Stats (Latest Active Date)
+      const dailyTotal = row.DAILY_TOTAL || 0;
+      const dailyLate = row.DAILY_LATE || 0;
+      const dailyDate = row.DAILY_DATE || "No Data";
+
+      let dailyScore = 0;
+      if (dailyTotal > 0) {
+        // Formula: (Late / Total) * 100
+        dailyScore = ((dailyLate / dailyTotal) * 100).toFixed(2);
+      }
+
+      return {
+        monthly: {
+          period: startDate ? "Selected Period" : "Current Month",
+          startDate: p_start,
+          endDate: p_end,
+          total: monthlyTotal,
+          late: monthlyLate,
+          score: `${monthlyScore}%`,
+        },
+        daily: {
+          period:
+            dailyDate !== "No Data"
+              ? `Latest Active (${dailyDate})`
+              : "Current Date",
+          date: dailyDate,
+          total: dailyTotal,
+          late: dailyLate,
+          score: `${dailyScore}%`,
+        },
+      };
+    } catch (error) {
+      console.error("Error in getDeliveryStats:", error);
+      throw error;
+    } finally {
+      if (connection) {
         try {
-            connection = await getConnection();
-
-            const binds = {
-                startDate: p_start,
-                endDate: p_end,
-                salesPerson: p_salesPerson
-            };
-
-            const result = await connection.execute(DELIVERY_STATS_QUERY, binds, {
-                outFormat: oracledb.OUT_FORMAT_OBJECT
-            });
-
-            const row = (result.rows && result.rows[0]) ? result.rows[0] : {};
-
-            // Extract Monthly/Period Stats
-            const monthlyTotal = row.MONTHLY_TOTAL || 0;
-            const monthlyLate = row.MONTHLY_LATE || 0;
-
-            let monthlyScore = 0;
-            if (monthlyTotal > 0) {
-                // Formula: (Late / Total) * 100
-                monthlyScore = ((monthlyLate / monthlyTotal) * 100).toFixed(2);
-            }
-
-            // Extract Daily Stats (Latest Active Date)
-            const dailyTotal = row.DAILY_TOTAL || 0;
-            const dailyLate = row.DAILY_LATE || 0;
-            const dailyDate = row.DAILY_DATE || "No Data";
-
-            let dailyScore = 0;
-            if (dailyTotal > 0) {
-                // Formula: (Late / Total) * 100
-                dailyScore = ((dailyLate / dailyTotal) * 100).toFixed(2);
-            }
-
-            return {
-                monthly: {
-                    period: startDate ? "Selected Period" : "Current Month",
-                    startDate: p_start,
-                    endDate: p_end,
-                    total: monthlyTotal,
-                    late: monthlyLate,
-                    score: `${monthlyScore}%`
-                },
-                daily: {
-                    period: dailyDate !== "No Data" ? `Latest Active (${dailyDate})` : "Current Date",
-                    date: dailyDate,
-                    total: dailyTotal,
-                    late: dailyLate,
-                    score: `${dailyScore}%`
-                }
-            };
-
-        } catch (error) {
-            console.error("Error in getDeliveryStats:", error);
-            throw error;
-        } finally {
-            if (connection) {
-                try {
-                    await connection.close();
-                } catch (err) {
-                    console.error("Error closing connection:", err);
-                }
-            }
+          await connection.close();
+        } catch (err) {
+          console.error("Error closing connection:", err);
         }
-    });
+      }
+    }
+  });
 }
 
 async function getDeliveryReport({ startDate, endDate, salesPerson } = {}) {
-    const now = new Date();
+  const now = new Date();
 
-    // Calculate Financial Year Start Date (April 1st)
-    // If current month is April or later, use current year's April 1st
-    // Otherwise, use previous year's April 1st
-    const currentMonth = now.getMonth(); // 0-indexed (0 = January, 3 = April)
-    const financialYearStart = currentMonth >= 3
-        ? new Date(now.getFullYear(), 3, 1)      // April 1st of current year
-        : new Date(now.getFullYear() - 1, 3, 1); // April 1st of previous year
+  // Calculate Financial Year Start Date (April 1st)
+  // If current month is April or later, use current year's April 1st
+  // Otherwise, use previous year's April 1st
+  const currentMonth = now.getMonth(); // 0-indexed (0 = January, 3 = April)
+  const financialYearStart =
+    currentMonth >= 3
+      ? new Date(now.getFullYear(), 3, 1) // April 1st of current year
+      : new Date(now.getFullYear() - 1, 3, 1); // April 1st of previous year
 
-    const defaultStart = financialYearStart.toISOString().slice(0, 10);
-    const defaultEnd = now.toISOString().slice(0, 10);
+  const defaultStart = financialYearStart.toISOString().slice(0, 10);
+  const defaultEnd = now.toISOString().slice(0, 10);
 
-    const p_start = startDate || defaultStart;
-    const p_end = endDate || defaultEnd;
+  const p_start = startDate || defaultStart;
+  const p_end = endDate || defaultEnd;
 
-    const cacheKey = generateCacheKey("delivery_report_v4", { p_start, p_end });
+  const cacheKey = generateCacheKey("delivery_report_v4", { p_start, p_end });
 
-    return await withCache(cacheKey, DEFAULT_TTL.DASHBOARD, async () => {
-        let connection;
+  return await withCache(cacheKey, DEFAULT_TTL.DASHBOARD, async () => {
+    let connection;
+    try {
+      connection = await getConnection();
+
+      const binds = {
+        startDate: p_start,
+        endDate: p_end,
+      };
+
+      const result = await connection.execute(DELIVERY_REPORT_QUERY, binds, {
+        outFormat: oracledb.OUT_FORMAT_OBJECT,
+      });
+
+      return result.rows;
+    } catch (error) {
+      console.error("Error in getDeliveryReport:", error);
+      throw error;
+    } finally {
+      if (connection) {
         try {
-            connection = await getConnection();
-
-            const binds = {
-                startDate: p_start,
-                endDate: p_end
-            };
-
-            const result = await connection.execute(DELIVERY_REPORT_QUERY, binds, {
-                outFormat: oracledb.OUT_FORMAT_OBJECT
-            });
-
-            return result.rows;
-
-        } catch (error) {
-            console.error("Error in getDeliveryReport:", error);
-            throw error;
-        } finally {
-            if (connection) {
-                try {
-                    await connection.close();
-                } catch (err) {
-                    console.error("Error closing connection:", err);
-                }
-            }
+          await connection.close();
+        } catch (err) {
+          console.error("Error closing connection:", err);
         }
-    });
+      }
+    }
+  });
 }
 
 async function getSalespersonDeliveryStats({ startDate, endDate } = {}) {
-    // Default to Current Month if no dates provided
-    const now = new Date();
-    const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-    const defaultEnd = now.toISOString().slice(0, 10);
+  // Default to Current Month if no dates provided
+  const now = new Date();
+  const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1)
+    .toISOString()
+    .slice(0, 10);
+  const defaultEnd = now.toISOString().slice(0, 10);
 
-    const p_start = startDate || defaultStart;
-    const p_end = endDate || defaultEnd;
+  const p_start = startDate || defaultStart;
+  const p_end = endDate || defaultEnd;
 
-    const cacheKey = generateCacheKey("salesperson_delivery_stats_v1", { p_start, p_end });
+  const cacheKey = generateCacheKey("salesperson_delivery_stats_v1", {
+    p_start,
+    p_end,
+  });
 
-    return await withCache(cacheKey, DEFAULT_TTL.DASHBOARD, async () => {
-        let connection;
-        try {
-            connection = await getConnection();
+  return await withCache(cacheKey, DEFAULT_TTL.DASHBOARD, async () => {
+    let connection;
+    try {
+      connection = await getConnection();
 
-            const query = `
+      const query = `
             WITH salesperson_data AS (
                 SELECT 
                     CASE
@@ -344,65 +361,66 @@ async function getSalespersonDeliveryStats({ startDate, endDate } = {}) {
             ORDER BY sales_person
             `;
 
-            const binds = {
-                startDate: p_start,
-                endDate: p_end
-            };
+      const binds = {
+        startDate: p_start,
+        endDate: p_end,
+      };
 
-            const result = await connection.execute(query, binds, {
-                outFormat: oracledb.OUT_FORMAT_OBJECT
-            });
+      const result = await connection.execute(query, binds, {
+        outFormat: oracledb.OUT_FORMAT_OBJECT,
+      });
 
-            // Process results into a more usable format
-            const salesPersonStats = {};
+      // Process results into a more usable format
+      const salesPersonStats = {};
 
-            result.rows.forEach(row => {
-                const salesPerson = row.SALES_PERSON;
-                const monthlyTotal = row.MONTHLY_TOTAL || 0;
-                const monthlyLate = row.MONTHLY_LATE || 0;
-                const dailyTotal = row.DAILY_TOTAL || 0;
-                const dailyLate = row.DAILY_LATE || 0;
-                const dailyDate = row.DAILY_DATE || "No Data";
+      result.rows.forEach((row) => {
+        const salesPerson = row.SALES_PERSON;
+        const monthlyTotal = row.MONTHLY_TOTAL || 0;
+        const monthlyLate = row.MONTHLY_LATE || 0;
+        const dailyTotal = row.DAILY_TOTAL || 0;
+        const dailyLate = row.DAILY_LATE || 0;
+        const dailyDate = row.DAILY_DATE || "No Data";
 
-                const monthlyScore = monthlyTotal > 0 ? ((monthlyLate / monthlyTotal) * 100).toFixed(2) : "0.00";
-                const dailyScore = dailyTotal > 0 ? ((dailyLate / dailyTotal) * 100).toFixed(2) : "0.00";
+        const monthlyScore =
+          monthlyTotal > 0
+            ? ((monthlyLate / monthlyTotal) * 100).toFixed(2)
+            : "0.00";
+        const dailyScore =
+          dailyTotal > 0 ? ((dailyLate / dailyTotal) * 100).toFixed(2) : "0.00";
 
-                salesPersonStats[salesPerson] = {
-                    monthly: {
-                        total: monthlyTotal,
-                        late: monthlyLate,
-                        score: `${monthlyScore}%`
-                    },
-                    daily: {
-                        date: dailyDate,
-                        total: dailyTotal,
-                        late: dailyLate,
-                        score: `${dailyScore}%`
-                    }
-                };
-            });
+        salesPersonStats[salesPerson] = {
+          monthly: {
+            total: monthlyTotal,
+            late: monthlyLate,
+            score: `${monthlyScore}%`,
+          },
+          daily: {
+            date: dailyDate,
+            total: dailyTotal,
+            late: dailyLate,
+            score: `${dailyScore}%`,
+          },
+        };
+      });
 
-            return salesPersonStats;
-
-        } catch (error) {
-            console.error("Error in getSalespersonDeliveryStats:", error);
-            throw error;
-        } finally {
-            if (connection) {
-                try {
-                    await connection.close();
-                } catch (err) {
-                    console.error("Error closing connection:", err);
-                }
-            }
+      return salesPersonStats;
+    } catch (error) {
+      console.error("Error in getSalespersonDeliveryStats:", error);
+      throw error;
+    } finally {
+      if (connection) {
+        try {
+          await connection.close();
+        } catch (err) {
+          console.error("Error closing connection:", err);
         }
-    });
+      }
+    }
+  });
 }
 
 module.exports = {
-    getDeliveryStats,
-    getDeliveryReport,
-    getSalespersonDeliveryStats
+  getDeliveryStats,
+  getDeliveryReport,
+  getSalespersonDeliveryStats,
 };
-
-

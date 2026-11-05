@@ -16,30 +16,46 @@ const DASHBOARD_ORACLE_CONCURRENCY = Math.max(
   1,
   Number(process.env.STORE_DASHBOARD_ORACLE_CONCURRENCY || 4)
 );
-const userTimeout = Number(process.env.STORE_DASHBOARD_FEEDBACK_TIMEOUT_MS);
-const GOOGLE_FEEDBACK_TIMEOUT_MS = isNaN(userTimeout) || userTimeout < 10000 ? 10000 : userTimeout;
-const parsedAttempts = parseInt(process.env.STORE_DASHBOARD_FEEDBACK_MAX_ATTEMPTS, 10);
-const GOOGLE_FEEDBACK_MAX_ATTEMPTS = Math.max(
-  1,
-  isNaN(parsedAttempts) ? 1 : parsedAttempts
+const parsedFeedbackTimeout = Number(
+  process.env.STORE_DASHBOARD_FEEDBACK_TIMEOUT_MS
 );
+const DASHBOARD_FEEDBACK_TIMEOUT_MS =
+  Number.isFinite(parsedFeedbackTimeout) && parsedFeedbackTimeout >= 1000
+    ? parsedFeedbackTimeout
+    : 3000;
+const parsedFeedbackAttempts = parseInt(
+  process.env.STORE_DASHBOARD_FEEDBACK_MAX_ATTEMPTS,
+  10
+);
+const DASHBOARD_FEEDBACK_MAX_ATTEMPTS = Math.max(
+  1,
+  Math.min(3, Number.isNaN(parsedFeedbackAttempts) ? 1 : parsedFeedbackAttempts)
+);
+const parsedFeedbackTotalTimeout = Number(
+  process.env.STORE_DASHBOARD_FEEDBACK_TOTAL_TIMEOUT_MS
+);
+const DASHBOARD_FEEDBACK_TOTAL_TIMEOUT_MS =
+  Number.isFinite(parsedFeedbackTotalTimeout) &&
+  parsedFeedbackTotalTimeout > 0
+    ? parsedFeedbackTotalTimeout
+    : Math.max(
+        DASHBOARD_FEEDBACK_TIMEOUT_MS,
+        Math.min(DASHBOARD_DEPENDENCY_TIMEOUT_MS, 5000)
+      );
+const parsedFeedbackCacheTtl = Number(
+  process.env.STORE_DASHBOARD_FEEDBACK_CACHE_TTL
+);
+const DASHBOARD_FEEDBACK_CACHE_TTL =
+  Number.isFinite(parsedFeedbackCacheTtl) && parsedFeedbackCacheTtl > 0
+    ? parsedFeedbackCacheTtl
+    : 300;
 const DASHBOARD_ORACLE_START_SQL = "TRUNC(SYSDATE, 'MM')";
 const DASHBOARD_RETURNABLE_START_SQL = "TRUNC(SYSDATE, 'MM')";
 const ORACLE_EXECUTE_OPTIONS = { outFormat: oracledb.OUT_FORMAT_OBJECT, fetchArraySize: 10000 };
 const DASHBOARD_CACHE_KEY = "dashboard_cache_v7";
-const optionalOracleWarnings = new Set();
 
 function isMissingTableError(error) {
   return String(error?.message || "").includes("does not exist");
-}
-
-function logOptionalOracleWarningOnce(key, label, error) {
-  if (optionalOracleWarnings.has(key)) {
-    return;
-  }
-
-  optionalOracleWarnings.add(key);
-  console.log(`[store dashboard] ${label}:`, error.message || error);
 }
 
 function buildEmptyDashboardPayload() {
@@ -199,7 +215,7 @@ async function fetchJsonWithTimeout(url, timeoutMs) {
     return await response.json();
   } catch (error) {
     if (error?.name === "AbortError") {
-      throw createTimeoutError("Google Forms feedback fetch", timeoutMs);
+      throw createTimeoutError("Store dashboard feedback fetch", timeoutMs);
     }
     throw error;
   } finally {
@@ -208,7 +224,13 @@ async function fetchJsonWithTimeout(url, timeoutMs) {
 }
 
 function normalizeFeedbackRows(json) {
-  if (!json || !json.success || !Array.isArray(json.data) || json.data.length <= 1) {
+  const isSuccess =
+    json?.success === true ||
+    String(json?.status || "")
+      .trim()
+      .toLowerCase() === "success";
+
+  if (!isSuccess || !Array.isArray(json?.data) || json.data.length <= 1) {
     return [];
   }
 
@@ -232,12 +254,31 @@ function normalizeFeedbackRows(json) {
 }
 
 async function fetchVendorFeedbacks() {
-  const endpoint = String(process.env.GOOGLE_FEEDBACK_STORE || "").trim();
+  const endpoint = String(
+    process.env.STORE_VENDOR_FEEDBACK_API_URL ||
+      process.env.VENDOR_FEEDBACK_API_URL ||
+    process.env.STORE_VENDOR_REGISTRATION_API_URL ||
+      process.env.VENDOR_REGISTRATION_API_URL ||
+      ""
+  ).trim();
+
   if (!endpoint) {
     return [];
   }
 
-  for (let attempt = 1; attempt <= GOOGLE_FEEDBACK_MAX_ATTEMPTS; attempt += 1) {
+  const startedAt = Date.now();
+  const deadline = startedAt + DASHBOARD_FEEDBACK_TOTAL_TIMEOUT_MS;
+
+  for (let attempt = 1; attempt <= DASHBOARD_FEEDBACK_MAX_ATTEMPTS; attempt += 1) {
+    const remainingMs = deadline - Date.now();
+
+    if (remainingMs <= 0) {
+      console.warn(
+        `[store dashboard] feedback fetch skipped after exceeding ${DASHBOARD_FEEDBACK_TOTAL_TIMEOUT_MS}ms total budget`
+      );
+      break;
+    }
+
     try {
       const url = new URL(endpoint);
       if (attempt > 1) {
@@ -246,19 +287,51 @@ async function fetchVendorFeedbacks() {
 
       const json = await fetchJsonWithTimeout(
         url.toString(),
-        GOOGLE_FEEDBACK_TIMEOUT_MS
+        Math.min(DASHBOARD_FEEDBACK_TIMEOUT_MS, remainingMs)
       );
 
       return normalizeFeedbackRows(json);
     } catch (error) {
       console.warn(
-        `[store dashboard] feedback fetch attempt ${attempt}/${GOOGLE_FEEDBACK_MAX_ATTEMPTS} failed:`,
+        `[store dashboard] feedback fetch attempt ${attempt}/${DASHBOARD_FEEDBACK_MAX_ATTEMPTS} failed:`,
         error.message || error
       );
     }
   }
 
   return [];
+}
+
+async function fetchDashboardIndentBundle(fromDate = null) {
+  return getOrSetCache(
+    cacheKeys.dashboardIndentBundle(normalizeCacheScope(fromDate)),
+    () => fetchOracleDashboardIndentRows(fromDate),
+    DEFAULT_TTL.INDENT
+  );
+}
+
+async function fetchDashboardPoBundle(fromDate = null) {
+  return getOrSetCache(
+    cacheKeys.dashboardPoBundle(normalizeCacheScope(fromDate)),
+    () => fetchOracleDashboardPoRows(fromDate),
+    DEFAULT_TTL.PO
+  );
+}
+
+async function fetchDashboardRepairBundle(fromDate = null) {
+  return getOrSetCache(
+    cacheKeys.dashboardRepairBundle(normalizeCacheScope(fromDate)),
+    () => fetchOracleDashboardRepairRows(fromDate),
+    DEFAULT_TTL.GATE_PASS
+  );
+}
+
+async function fetchDashboardFeedbackRows() {
+  return getOrSetCache(
+    cacheKeys.dashboardFeedbacks(),
+    fetchVendorFeedbacks,
+    DASHBOARD_FEEDBACK_CACHE_TTL
+  );
 }
 
 function buildReturnableDashboardCte(fromDate = null) {
@@ -429,18 +502,10 @@ async function fetchOracleDashboardSummary() {
       );
       totalIssuedQuantity = toNumber(issueRows[0]?.TOTAL_ISSUED_QTY);
     } catch (error) {
-      if (isMissingTableError(error)) {
-        logOptionalOracleWarningOnce(
-          "oracle-issue-summary-missing",
-          "Oracle issue summary skipped because view_issue_engine is unavailable",
-          error
-        );
-      } else {
-        console.warn(
-          "[store dashboard] Oracle issue summary failed:",
-          error.message || error
-        );
-      }
+      console.warn(
+        "[store dashboard] Oracle issue summary failed:",
+        error.message || error
+      );
     }
 
     let outOfStockCount = 0;
@@ -458,18 +523,10 @@ async function fetchOracleDashboardSummary() {
       );
       outOfStockCount = toNumber(stockRows[0]?.OUT_OF_STOCK_COUNT);
     } catch (error) {
-      if (isMissingTableError(error)) {
-        logOptionalOracleWarningOnce(
-          "oracle-stock-summary-missing",
-          "Oracle stock summary skipped because view_item_stock_engine is unavailable",
-          error
-        );
-      } else {
-        console.warn(
-          "[store dashboard] Oracle stock summary failed:",
-          error.message || error
-        );
-      }
+      console.warn(
+        "[store dashboard] Oracle stock summary failed:",
+        error.message || error
+      );
     }
 
     const statusData = statusRows[0] || {};
@@ -820,75 +877,39 @@ function normalizeCacheScope(fromDate) {
 }
 
 export async function fetchDashboardPendingIndents(fromDate = null) {
-  return getOrSetCache(
-    cacheKeys.indentPending(normalizeCacheScope(fromDate)),
-    async () => {
-      const result = await fetchOracleDashboardIndentRows(fromDate);
-      return result.pendingRows || [];
-    },
-    DEFAULT_TTL.INDENT
-  );
+  const result = await fetchDashboardIndentBundle(fromDate);
+  return result.pendingRows || [];
 }
 
 export async function fetchDashboardIndentHistory(fromDate = null) {
-  return getOrSetCache(
-    cacheKeys.indentHistory(normalizeCacheScope(fromDate)),
-    async () => {
-      const result = await fetchOracleDashboardIndentRows(fromDate);
-      return result.historyRows || [];
-    },
-    DEFAULT_TTL.INDENT
-  );
+  const result = await fetchDashboardIndentBundle(fromDate);
+  return result.historyRows || [];
 }
 
 export async function fetchDashboardPoPending(fromDate = null) {
-  return getOrSetCache(
-    cacheKeys.poPending(normalizeCacheScope(fromDate)),
-    async () => {
-      const result = await fetchOracleDashboardPoRows(fromDate);
-      return {
-        rows: result.pendingRows || [],
-        total: toNumber(result.pendingTotal),
-      };
-    },
-    DEFAULT_TTL.PO
-  );
+  const result = await fetchDashboardPoBundle(fromDate);
+  return {
+    rows: result.pendingRows || [],
+    total: toNumber(result.pendingTotal),
+  };
 }
 
 export async function fetchDashboardPoHistory(fromDate = null) {
-  return getOrSetCache(
-    cacheKeys.poHistory(normalizeCacheScope(fromDate)),
-    async () => {
-      const result = await fetchOracleDashboardPoRows(fromDate);
-      return {
-        rows: result.historyRows || [],
-        total: toNumber(result.historyTotal),
-      };
-    },
-    DEFAULT_TTL.PO
-  );
+  const result = await fetchDashboardPoBundle(fromDate);
+  return {
+    rows: result.historyRows || [],
+    total: toNumber(result.historyTotal),
+  };
 }
 
 export async function fetchDashboardRepairPending(fromDate = null) {
-  return getOrSetCache(
-    cacheKeys.gatePassPending(normalizeCacheScope(fromDate)),
-    async () => {
-      const result = await fetchOracleDashboardRepairRows(fromDate);
-      return result.pendingRows || [];
-    },
-    DEFAULT_TTL.GATE_PASS
-  );
+  const result = await fetchDashboardRepairBundle(fromDate);
+  return result.pendingRows || [];
 }
 
 export async function fetchDashboardRepairHistory(fromDate = null) {
-  return getOrSetCache(
-    cacheKeys.gatePassReceived(normalizeCacheScope(fromDate)),
-    async () => {
-      const result = await fetchOracleDashboardRepairRows(fromDate);
-      return result.historyRows || [];
-    },
-    DEFAULT_TTL.GATE_PASS
-  );
+  const result = await fetchDashboardRepairBundle(fromDate);
+  return result.historyRows || [];
 }
 
 export async function fetchDashboardReturnableDetails(fromDate = null) {
@@ -934,8 +955,8 @@ export async function fetchDashboardReturnableStats(fromDate = null) {
 }
 
 async function buildDashboardPayload() {
+  const buildStartedAt = Date.now();
   const currentMonthStartDate = getCurrentMonthStartDate();
-  const googleFetchPromise = fetchVendorFeedbacks();
 
   // Attach error handlers immediately so a PostgreSQL timeout cannot surface
   // as a detached rejection while Oracle fetches are still in progress.
@@ -999,39 +1020,21 @@ async function buildDashboardPayload() {
       ),
     () =>
       runDashboardTask(
-        "Oracle pending indents",
-        () => fetchDashboardPendingIndents(),
-        []
+        "Oracle indent bundle",
+        () => fetchDashboardIndentBundle(),
+        { pendingRows: [], historyRows: [] }
       ),
     () =>
       runDashboardTask(
-        "Oracle history indents",
-        () => fetchDashboardIndentHistory(),
-        []
+        "Oracle purchase order bundle",
+        () => fetchDashboardPoBundle(),
+        { pendingRows: [], historyRows: [], pendingTotal: 0, historyTotal: 0 }
       ),
     () =>
       runDashboardTask(
-        "Oracle pending purchase orders",
-        () => fetchDashboardPoPending(),
-        { rows: [], total: 0 }
-      ),
-    () =>
-      runDashboardTask(
-        "Oracle purchase order history",
-        () => fetchDashboardPoHistory(),
-        { rows: [], total: 0 }
-      ),
-    () =>
-      runDashboardTask(
-        "Oracle pending repair gate passes",
-        () => fetchDashboardRepairPending(currentMonthStartDate),
-        []
-      ),
-    () =>
-      runDashboardTask(
-        "Oracle repair gate pass history",
-        () => fetchDashboardRepairHistory(currentMonthStartDate),
-        []
+        "Oracle repair gate pass bundle",
+        () => fetchDashboardRepairBundle(currentMonthStartDate),
+        { pendingRows: [], historyRows: [] }
       ),
     () =>
       runDashboardTask(
@@ -1056,16 +1059,24 @@ async function buildDashboardPayload() {
 
   const [
     indentSummary,
-    pendingIndents,
-    historyIndents,
-    poPendingData,
-    poHistoryData,
-    repairPending,
-    repairHistory,
+    indentBundle,
+    poBundle,
+    repairBundle,
     returnableDetails,
   ] = oracleData;
 
-  const vendorFeedbacks = await googleFetchPromise;
+  const pendingIndents = indentBundle.pendingRows || [];
+  const historyIndents = indentBundle.historyRows || [];
+  const poPendingData = {
+    rows: poBundle.pendingRows || [],
+    total: toNumber(poBundle.pendingTotal),
+  };
+  const poHistoryData = {
+    rows: poBundle.historyRows || [],
+    total: toNumber(poBundle.historyTotal),
+  };
+  const repairPending = repairBundle.pendingRows || [];
+  const repairHistory = repairBundle.historyRows || [];
   const combinedPoRows = [
     ...(poPendingData.rows || []),
     ...(poHistoryData.rows || []),
@@ -1122,7 +1133,7 @@ async function buildDashboardPayload() {
     topVendors: buildTopVendors(combinedPoRows),
   };
 
-  return {
+  const payload = {
     tasks: tasksResult.rows || [],
     pendingCount: Number(stats.pending_count || 0),
     completedCount: Number(stats.completed_count || 0),
@@ -1138,8 +1149,13 @@ async function buildDashboardPayload() {
     repairPending: repairPending || [],
     repairHistory: repairHistory || [],
     returnableDetails: returnableDetails || [],
-    feedbacks: vendorFeedbacks,
   };
+
+  console.log(
+    `[store dashboard] payload built in ${Date.now() - buildStartedAt}ms`
+  );
+
+  return payload;
 }
 
 export async function invalidateRepairDashboardCache() {
@@ -1180,4 +1196,15 @@ export async function fetchDashboardMetricsSnapshot() {
   }
 }
 
-
+export async function fetchDashboardFeedbackSnapshot() {
+  try {
+    const data = await fetchDashboardFeedbackRows();
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error(
+      "Error in fetchDashboardFeedbackSnapshot:",
+      error.message || error
+    );
+    return [];
+  }
+}

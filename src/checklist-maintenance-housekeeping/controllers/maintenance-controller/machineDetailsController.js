@@ -2,7 +2,8 @@ import * as machineService from "../../services/maintenance-serices/machineDetai
 
 export const getAllMachines = async (req, res) => {
   try {
-    const data = await machineService.getAllMachines();
+    const { machine_name: machineName, department } = req.query;
+    const data = await machineService.getAllMachines({ machineName, department });
     res.json({ success: true, data });
   } catch (err) {
     console.error("Error fetching machines:", err);

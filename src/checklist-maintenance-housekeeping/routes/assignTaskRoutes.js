@@ -2,6 +2,7 @@ import express from "express";
 import {
   getUniqueDepartments,
   getUniqueDivisions,
+  getUserProfile,
   getUniqueGivenBy,
   getUniqueDoerNames,
   getWorkingDays,
@@ -15,6 +16,9 @@ router.get("/departments/:user_name", getUniqueDepartments);
 
 // Divisions
 router.get("/divisions", getUniqueDivisions);
+
+// User profile for non-admin auto-fill
+router.get("/user-profile/:user_name", getUserProfile);
 
 // Given By
 router.get("/given-by", getUniqueGivenBy);

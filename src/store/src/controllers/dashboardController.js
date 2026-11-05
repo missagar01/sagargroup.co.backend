@@ -1,5 +1,6 @@
 import {
   fetchDashboardMetricsSnapshot,
+  fetchDashboardFeedbackSnapshot,
   fetchDashboardPendingIndents,
   fetchDashboardIndentHistory,
   fetchDashboardPoPending,
@@ -26,6 +27,25 @@ export const getDashboardMetrics = async (req, res) => {
     console.error("Dashboard Error:", error);
     console.error("Error details:", error.message);
     res.status(500).json({
+      success: false,
+      message: error.message || "Internal Server Error",
+      details: error.message,
+    });
+  }
+};
+
+export const getDashboardFeedbacks = async (req, res) => {
+  try {
+    const data = await fetchDashboardFeedbackSnapshot();
+    console.log(`[store dashboard] feedback rows=${data.length}`);
+
+    return res.json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    console.error("Dashboard Feedback Error:", error);
+    return res.status(500).json({
       success: false,
       message: error.message || "Internal Server Error",
       details: error.message,

@@ -33,6 +33,7 @@ const PUBLIC_COLUMNS = [
   "employee_id",
   "page_access",
   "system_access",
+  "given_by",
   "created_at"
 ];
 
@@ -88,6 +89,7 @@ async function createUser(userData) {
     employee_id,
     page_access,
     system_access,
+    given_by,
   } = userData;
 
   const columns = [
@@ -103,6 +105,7 @@ async function createUser(userData) {
     "employee_id",
     "page_access",
     "system_access",
+    "given_by",
   ];
 
   // Convert number to integer if it's a string, or null if empty
@@ -129,6 +132,7 @@ async function createUser(userData) {
     employee_id || null,
     page_access || null,
     system_access || null,
+    given_by || null,
   ];
 
   const placeholders = columns.map((_, index) => `$${index + 1}`).join(", ");
@@ -168,6 +172,7 @@ async function updateUser(id, updates) {
     "employee_id",
     "page_access",
     "system_access",
+    "given_by",
   ];
 
   const setClauses = [];
@@ -239,6 +244,17 @@ async function fetchDepartments() {
   return result.rows.map(row => row.department);
 }
 
+async function fetchGivenBy() {
+  const result = await pool.query(`
+    SELECT DISTINCT given_by
+    FROM public.users
+    WHERE given_by IS NOT NULL
+      AND TRIM(given_by) != ''
+    ORDER BY given_by ASC;
+  `);
+  return result.rows.map(row => row.given_by);
+}
+
 module.exports = {
   fetchUsers,
   fetchUserById,
@@ -247,4 +263,5 @@ module.exports = {
   updateUser,
   deleteUser,
   fetchDepartments,
+  fetchGivenBy,
 };

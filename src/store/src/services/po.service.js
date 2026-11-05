@@ -34,10 +34,12 @@ export async function getPoPending(fromDate = null) {
             t.qtyorder AS QTYORDER,
             t.um AS UM,
             NVL(t.qtyexecute, 0) AS QTYEXECUTE,
-            (NVL(t.qtyorder, 0) - NVL(t.qtyexecute, 0)) AS BALANCE_QTY
+            (NVL(t.qtyorder, 0) - NVL(t.qtyexecute, 0)) AS BALANCE_QTY,
+            lhs_utility.get_name('div_code', a.div_code) AS DIVISION_NAME,
+            lhs_utility.get_name('dept_code', a.dept_code) AS DEPARTMENT_NAME
           FROM view_order_engine t
           LEFT JOIN (
-            SELECT DISTINCT vrno, indent_remark 
+            SELECT DISTINCT vrno, indent_remark, div_code, dept_code
             FROM view_indent_engine
             WHERE entity_code = 'SR'
           ) a ON a.vrno = t.indent_vrno
@@ -87,10 +89,12 @@ export async function getPoHistory(fromDate = null) {
             t.qtyorder AS QTYORDER,
             t.um AS UM,
             t.qtyexecute AS QTYEXECUTE,
-            (NVL(t.qtyorder, 0) - NVL(t.qtyexecute, 0)) AS BALANCE_QTY
+            (NVL(t.qtyorder, 0) - NVL(t.qtyexecute, 0)) AS BALANCE_QTY,
+            lhs_utility.get_name('div_code', a.div_code) AS DIVISION_NAME,
+            lhs_utility.get_name('dept_code', a.dept_code) AS DEPARTMENT_NAME
           FROM view_order_engine t
           LEFT JOIN (
-            SELECT DISTINCT vrno, indent_remark 
+            SELECT DISTINCT vrno, indent_remark, div_code, dept_code
             FROM view_indent_engine
             WHERE entity_code = 'SR'
           ) a ON a.vrno = t.indent_vrno

@@ -15,6 +15,7 @@ import stockRoutes from "./stockRoutes.js";
 import repairGatePassRoutes from "./repairGatePass.routes.js";
 import vendorRegistrationRoutes from "./vendorRegistration.routes.js";
 import pendingGateEntryRoutes from "./pendingGateEntry.routes.js";
+import grnReportRoutes from "./grnReport.routes.js";
 
 // Checklist PostgreSQL routes
 import indentRoutes from "./indent.routes.js";
@@ -30,7 +31,7 @@ import storeGRNRoutes from "./storeGRN.routes.js";
 import storeIssueRoutes from "./storeIssue.routes.js";
 import returnableRoutes from "./returnable.routes.js";
 import erpIndentRoutes from "./erpIndent.routes.js";
-
+import chatbotRoutes from "./chatbotRoutes.js";
 const router = Router();
 
 // Auth utility routes (local login/logout removed; shared login is /api/auth/login)
@@ -48,6 +49,7 @@ router.use("/stock", stockRoutes);
 router.use("/repair-gate-pass", repairGatePassRoutes);
 router.use("/vendor-registration", vendorRegistrationRoutes);
 router.use("/pending-gate-entry", pendingGateEntryRoutes);
+router.use("/grn-report", grnReportRoutes);
 
 // Additional Oracle-backed routes
 router.use("/store-grn", storeGRNRoutes);
@@ -63,6 +65,6 @@ router.use("/settings", settingsRoutes);
 router.use("/store-grn-approval", storeGRNApproval);
 router.use("/departments", departmentRoutes);
 router.use("/division", divisionRoutes);
-
+router.use("/chatbot", chatbotRoutes);
 export default router;
 

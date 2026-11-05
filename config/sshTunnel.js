@@ -26,7 +26,7 @@ const REMOTE_POSTGRES_PORT = parseInt(
   10
 );
 const MAX_INITIAL_RETRIES = parseInt(
-  process.env.SSH_MAX_INITIAL_RETRIES || "3",
+  process.env.SSH_MAX_INITIAL_RETRIES || "2",
   10
 );
 const MAX_SSH_RECONNECT_ATTEMPTS = parseInt(
@@ -544,10 +544,10 @@ async function establishTunnels() {
       host: SSH_HOST,
       port: SSH_PORT,
       username: SSH_USER,
-      readyTimeout: 60000,
+      readyTimeout: 10000,
       keepaliveInterval: 5000,
       keepaliveCountMax: 10,
-      timeout: 60000,
+      timeout: 10000,
       algorithms: {
         kex: [
           "ecdh-sha2-nistp256",
