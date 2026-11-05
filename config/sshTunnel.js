@@ -34,6 +34,11 @@ const MAX_SSH_RECONNECT_ATTEMPTS = parseInt(
   10
 );
 const MAX_BACKOFF_MS = 30000;
+const BACKOFF_JITTER_RATIO = 0.2;
+const IDLE_RETRY_INTERVAL_MS = parseInt(
+  process.env.SSH_IDLE_RETRY_INTERVAL_MS || "120000",
+  10
+);
 const PORT_SCAN_LIMIT = parseInt(
   process.env.SSH_LOCAL_PORT_SCAN_LIMIT || "10",
   10
@@ -46,6 +51,22 @@ const DB_TUNNEL_KEEPALIVE_MS = parseInt(
   process.env.SSH_DB_TUNNEL_KEEPALIVE_MS || "30000",
   10
 );
+const SSH_READY_TIMEOUT_MS = getPositiveInteger(
+  process.env.SSH_READY_TIMEOUT_MS,
+  30000
+);
+const SSH_SOCKET_TIMEOUT_MS = getNonNegativeInteger(
+  process.env.SSH_SOCKET_TIMEOUT_MS || process.env.SSH_CONNECT_TIMEOUT_MS,
+  0
+);
+const SSH_KEEPALIVE_INTERVAL_MS = getPositiveInteger(
+  process.env.SSH_KEEPALIVE_INTERVAL_MS,
+  10000
+);
+const SSH_KEEPALIVE_COUNT_MAX = getPositiveInteger(
+  process.env.SSH_KEEPALIVE_COUNT_MAX,
+  12
+);
 
 let sshClient = null;
 let oracleTunnelServer = null;
@@ -56,9 +77,46 @@ let reconnectAttempts = 0;
 let tunnelInitPromise = null;
 let currentLocalOraclePort = DEFAULT_LOCAL_ORACLE_PORT;
 let currentLocalPostgresPort = DEFAULT_LOCAL_POSTGRES_PORT;
+const tunnelStateListeners = new Set();
+
+function getPositiveInteger(value, fallbackValue) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackValue;
+}
+
+function getNonNegativeInteger(value, fallbackValue) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallbackValue;
+}
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withJitter(ms) {
+  const jitter = ms * BACKOFF_JITTER_RATIO * (Math.random() * 2 - 1);
+  return Math.max(1000, Math.round(ms + jitter));
+}
+
+function emitTunnelState(type, details = {}) {
+  for (const listener of tunnelStateListeners) {
+    try {
+      listener({ type, ...details });
+    } catch (error) {
+      console.error("[SSH] Tunnel state listener failed:", error.message || error);
+    }
+  }
+}
+
+function onTunnelStateChange(listener) {
+  if (typeof listener !== "function") {
+    return () => {};
+  }
+
+  tunnelStateListeners.add(listener);
+  return () => {
+    tunnelStateListeners.delete(listener);
+  };
 }
 
 function resetBackoff() {
@@ -409,6 +467,10 @@ async function establishTunnels() {
       settled = true;
       resetBackoff();
       reconnectAttempts = 0;
+      emitTunnelState("connected", {
+        oraclePort: currentLocalOraclePort,
+        postgresPort: currentLocalPostgresPort,
+      });
       resolve(value);
     };
 
@@ -446,6 +508,9 @@ async function establishTunnels() {
         return;
       }
 
+      emitTunnelState("disconnected", {
+        reason: error.message || String(error),
+      });
       await cleanupTunnelServers();
       await cleanupClient();
       void scheduleReconnect();
@@ -544,10 +609,10 @@ async function establishTunnels() {
       host: SSH_HOST,
       port: SSH_PORT,
       username: SSH_USER,
-      readyTimeout: 10000,
-      keepaliveInterval: 5000,
-      keepaliveCountMax: 10,
-      timeout: 10000,
+      readyTimeout: SSH_READY_TIMEOUT_MS,
+      keepaliveInterval: SSH_KEEPALIVE_INTERVAL_MS,
+      keepaliveCountMax: SSH_KEEPALIVE_COUNT_MAX,
+      timeout: SSH_SOCKET_TIMEOUT_MS,
       algorithms: {
         kex: [
           "ecdh-sha2-nistp256",
@@ -582,19 +647,29 @@ async function scheduleReconnect() {
 
   if (reconnectAttempts >= MAX_SSH_RECONNECT_ATTEMPTS) {
     console.error(
-      `[SSH] SSH permanently disabled after ${MAX_SSH_RECONNECT_ATTEMPTS} failures.`
+      `[SSH] SSH failed ${MAX_SSH_RECONNECT_ATTEMPTS} times in a row; backing off to a slow retry every ${IDLE_RETRY_INTERVAL_MS / 1000}s.`
     );
     console.error(
       "[SSH] Please check your network, SSH credentials, or remote server status."
     );
+
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      reconnectAttempts = 0;
+      resetBackoff();
+      void initSSHTunnel().catch((error) => {
+        console.error("[SSH] Idle reconnect attempt failed:", error.message || error);
+        void scheduleReconnect();
+      });
+    }, IDLE_RETRY_INTERVAL_MS);
     return;
   }
 
-  const waitMs = Math.min(reconnectDelayMs, MAX_BACKOFF_MS);
+  const waitMs = withJitter(Math.min(reconnectDelayMs, MAX_BACKOFF_MS));
   reconnectAttempts += 1;
 
   console.warn(
-    `[SSH] Scheduling SSH reconnect (${reconnectAttempts}/${MAX_SSH_RECONNECT_ATTEMPTS}) in ${waitMs / 1000}s...`
+    `[SSH] Scheduling SSH reconnect (${reconnectAttempts}/${MAX_SSH_RECONNECT_ATTEMPTS}) in ${Math.round(waitMs / 1000)}s...`
   );
 
   reconnectTimer = setTimeout(() => {
@@ -633,8 +708,8 @@ async function initSSHTunnel() {
           throw error;
         }
 
-        const waitMs = Math.min(2000 * attempt, MAX_BACKOFF_MS);
-        console.log(`[SSH] Retrying SSH tunnel in ${waitMs / 1000}s...`);
+        const waitMs = withJitter(Math.min(5000 * attempt, MAX_BACKOFF_MS));
+        console.log(`[SSH] Retrying SSH tunnel in ${Math.round(waitMs / 1000)}s...`);
         await delay(waitMs);
         attempt += 1;
       }
@@ -691,4 +766,5 @@ module.exports = {
   getLocalPostgresPort,
   getLocalOraclePort,
   isTunnelActive,
+  onTunnelStateChange,
 };

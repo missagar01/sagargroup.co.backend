@@ -76,6 +76,22 @@ const parseDepartments = (value) => {
     .filter(Boolean); // Remove empty strings
 };
 
+const mergeDepartmentLists = (...departmentGroups) => {
+  const seen = new Set();
+  const merged = [];
+
+  departmentGroups.flat().forEach((department) => {
+    const normalized = normalizeDepartmentValue(department).toLowerCase();
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    merged.push(normalizeDepartmentValue(department));
+  });
+
+  return merged;
+};
+
 const resolveDepartment = (req) => {
   // Try to get page access from header (sent from frontend axiosInstance)
   const pageAccessRaw = req.headers['x-page-access'] || '';
@@ -100,51 +116,54 @@ const resolveDepartment = (req) => {
 
   // For user role, prioritize user_access1 from header/query (not from JWT token)
   if (roleLower === 'user') {
-    // Get user_access1 from header or query parameter (not from JWT token)
-    // Try both lowercase and original case, and decode URL-encoded values
+    const userDepartment = decodeHeader(
+      req.headers['x-user-department'] || req.headers['X-User-Department'] || ''
+    );
     const userAccess1Raw = req.headers['x-user-access1'] || req.headers['X-User-Access1'] || req.query?.user_access1 || '';
     const userAccess1 = decodeHeader(userAccess1Raw);
-    if (userAccess1) {
-      const departments = parseDepartments(userAccess1);
-      if (departments.length > 0) {
-        logger.info({
-          role: 'user',
-          userAccess1,
-          parsedDepartments: departments,
-          departmentCount: departments.length,
-          headers: {
-            'x-user-role': req.headers['x-user-role'],
-            'x-user-access1': req.headers['x-user-access1'],
-            'X-User-Access1': req.headers['X-User-Access1']
-          },
-          note: 'User department resolved from user_access1 header/query'
-        }, 'resolveDepartment - User role with user_access1');
-        return departments;
-      }
-    }
-    // Fallback to user_access if user_access1 is not available
     const userAccessRaw = req.headers['x-user-access'] || req.headers['X-User-Access'] || req.query?.user_access || '';
     const userAccess = decodeHeader(userAccessRaw);
-    if (userAccess) {
-      const departments = parseDepartments(userAccess);
-      if (departments.length > 0) {
-        logger.info({
-          role: 'user',
-          userAccess,
-          parsedDepartments: departments,
-          departmentCount: departments.length,
-          note: 'User department resolved from user_access header/query (fallback)'
-        }, 'resolveDepartment - User role with user_access fallback');
-        return departments;
-      }
+    const verifyAccessDept = decodeHeader(
+      req.headers['x-verify-access-dept'] || req.headers['X-Verify-Access-Dept'] || req.query?.verify_access_dept || ''
+    );
+
+    const departments = mergeDepartmentLists(
+      parseDepartments(userDepartment),
+      parseDepartments(userAccess1),
+      parseDepartments(userAccess),
+      parseDepartments(verifyAccessDept)
+    );
+
+    if (departments.length > 0) {
+      logger.info({
+        role: 'user',
+        userDepartment,
+        userAccess1,
+        userAccess,
+        verifyAccessDept,
+        parsedDepartments: departments,
+        departmentCount: departments.length,
+        headers: {
+          'x-user-role': req.headers['x-user-role'],
+          'x-user-department': req.headers['x-user-department'],
+          'x-user-access1': req.headers['x-user-access1'],
+          'x-user-access': req.headers['x-user-access'],
+          'x-verify-access-dept': req.headers['x-verify-access-dept']
+        },
+        note: 'User department resolved from merged housekeeping access headers'
+      }, 'resolveDepartment - User role merged housekeeping access');
+      return departments;
     }
+
     // User role with no departments - return null to show no data
     logger.warn({
       role: 'user',
       headers: {
         'x-user-role': req.headers['x-user-role'],
+        'x-user-department': req.headers['x-user-department'],
         'x-user-access1': req.headers['x-user-access1'],
         'x-user-access': req.headers['x-user-access'],
+        'x-verify-access-dept': req.headers['x-verify-access-dept'],
         'X-User-Access1': req.headers['X-User-Access1']
       },
       allHeaders: Object.keys(req.headers).filter(h => h.toLowerCase().includes('user')),

@@ -7,6 +7,7 @@ import {
   buildDownloadFilename,
   sendRowsAsExcel,
 } from "../utils/excel.helper.js";
+import { resolveEntity } from "../utils/entity.helper.js";
 
 const DEFAULT_PO_FROM_DATE = "2025-04-01";
 
@@ -118,7 +119,8 @@ export async function getPoPending(req, res) {
   try {
     // backend pagination removed – full list
     const fromDate = resolvePoFromDateQuery(req.query.fromDate);
-    const { rows, total } = await getPoPendingRows(fromDate);
+    const entity = resolveEntity(req.query.entity);
+    const { rows, total } = await getPoPendingRows(fromDate, entity);
     console.log(`[store po] pending rows=${rows.length}, total=${total}`);
 
     return res.json({
@@ -137,7 +139,8 @@ export async function getPoPending(req, res) {
 export async function getPoHistory(req, res) {
   try {
     const fromDate = resolvePoFromDateQuery(req.query.fromDate);
-    const { rows, total } = await getPoHistoryRows(fromDate);
+    const entity = resolveEntity(req.query.entity);
+    const { rows, total } = await getPoHistoryRows(fromDate, entity);
     console.log(`[store po] history rows=${rows.length}, total=${total}`);
 
     return res.json({
@@ -156,13 +159,14 @@ export async function getPoHistory(req, res) {
 export async function downloadPoPending(req, res) {
   try {
     const fromDate = resolvePoFromDateQuery(req.query.fromDate);
-    const { rows = [] } = await getPoPendingRows(fromDate);
+    const entity = resolveEntity(req.query.entity);
+    const { rows = [] } = await getPoPendingRows(fromDate, entity);
     const preparedRows = annotatePoRows(rows);
     await sendRowsAsExcel(res, {
       rows: preparedRows,
       columns: poPendingDownloadColumns,
       sheetName: "Pending PO",
-      fileName: buildPoFilename("pending"),
+      fileName: buildPoFilename(`pending-${entity}`),
     });
   } catch (err) {
     console.error("downloadPoPending error:", err);
@@ -175,13 +179,14 @@ export async function downloadPoPending(req, res) {
 export async function downloadPoHistory(req, res) {
   try {
     const fromDate = resolvePoFromDateQuery(req.query.fromDate);
-    const { rows = [] } = await getPoHistoryRows(fromDate);
+    const entity = resolveEntity(req.query.entity);
+    const { rows = [] } = await getPoHistoryRows(fromDate, entity);
     const preparedRows = annotatePoRows(rows);
     await sendRowsAsExcel(res, {
       rows: preparedRows,
       columns: poHistoryDownloadColumns,
       sheetName: "PO History",
-      fileName: buildPoFilename("history"),
+      fileName: buildPoFilename(`history-${entity}`),
     });
   } catch (err) {
     console.error("downloadPoHistory error:", err);

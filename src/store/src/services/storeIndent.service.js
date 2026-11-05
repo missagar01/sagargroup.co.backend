@@ -2,6 +2,7 @@
 import { getConnection } from "../config/db.js";
 import oracledb from "oracledb";
 import { getOrSetCache, deleteCache, cacheKeys, DEFAULT_TTL } from "./redisCache.js";
+import { resolveEntity } from "../utils/entity.helper.js";
 
 const DEFAULT_INDENT_FROM_DATE = "2025-04-01";
 const DASHBOARD_FROM_DATE = "DATE '2025-04-01'";
@@ -38,6 +39,7 @@ const DASHBOARD_PURCHASE_WHERE = `
     `;
 const DASHBOARD_ISSUE_WHERE = `
       t.entity_code = 'SR'
+      AND t.trantype = 'MS'
       AND t.vrdate >= ${DASHBOARD_FROM_DATE}
     `;
 const DASHBOARD_STOCK_WHERE = `
@@ -77,19 +79,20 @@ export async function invalidateIndentCaches() {
    PENDING INDENTS (NO PAGINATION)
    ============================ */
 
-export async function getPending(fromDate = null, userDivision = null) {
+export async function getPending(fromDate = null, userDivision = null, entity = null) {
   const resolvedFromDate = resolveIndentFromDate(fromDate);
   const divisionDisplayName = resolveDivisionDisplayName(userDivision);
+  const entityCode = resolveEntity(entity);
 
   return await getOrSetCache(
     cacheKeys.indentPending(
-      `${normalizeCacheScope(resolvedFromDate)}:${divisionDisplayName || "all"}`
+      `${entityCode}:${normalizeCacheScope(resolvedFromDate)}:${divisionDisplayName || "all"}`
     ),
     async () => {
       const conn = await getConnection();
       try {
         const baseWhere = `
-          t.entity_code = 'SR'
+          t.entity_code = :entityCode
           AND t.po_no IS NULL
           AND t.cancelleddate IS NULL
           AND t.vrdate >= TO_DATE(:fromDate, 'YYYY-MM-DD')
@@ -117,7 +120,7 @@ export async function getPending(fromDate = null, userDivision = null) {
           ORDER BY t.vrdate DESC, t.vrno DESC
         `;
 
-        const binds = { fromDate: resolvedFromDate };
+        const binds = { fromDate: resolvedFromDate, entityCode };
         if (divisionDisplayName) binds.divisionDisplayName = divisionDisplayName;
 
         const result = await conn.execute(sql, binds, {
@@ -137,13 +140,14 @@ export async function getPending(fromDate = null, userDivision = null) {
    HISTORY INDENTS (NO PAGINATION)
    ============================ */
 
-export async function getHistory(fromDate = null, userDivision = null) {
+export async function getHistory(fromDate = null, userDivision = null, entity = null) {
   const resolvedFromDate = resolveIndentFromDate(fromDate);
   const divisionDisplayName = resolveDivisionDisplayName(userDivision);
+  const entityCode = resolveEntity(entity);
 
   return await getOrSetCache(
     cacheKeys.indentHistory(
-      `${normalizeCacheScope(resolvedFromDate)}:${divisionDisplayName || "all"}`
+      `${entityCode}:${normalizeCacheScope(resolvedFromDate)}:${divisionDisplayName || "all"}`
     ),
     async () => {
       const conn = await getConnection();
@@ -190,13 +194,13 @@ export async function getHistory(fromDate = null, userDivision = null) {
                 ) AS grn_date
 
         FROM view_indent_engine t
-        WHERE t.entity_code = 'SR'
+        WHERE t.entity_code = :entityCode
           AND t.vrdate >= TO_DATE(:fromDate, 'YYYY-MM-DD')
           ${divisionDisplayName ? "AND UPPER(lhs_utility.get_name('div_code', t.div_code)) = UPPER(:divisionDisplayName)" : ""}
         ORDER BY t.vrdate DESC, t.vrno DESC
         `;
 
-        const binds = { fromDate: resolvedFromDate };
+        const binds = { fromDate: resolvedFromDate, entityCode };
         if (divisionDisplayName) binds.divisionDisplayName = divisionDisplayName;
 
         const result = await conn.execute(sql, binds, {
@@ -279,8 +283,8 @@ export async function getDashboardMetrics() {
           const issuedResult = await conn.execute(
             `
             SELECT
-              NVL(SUM(NVL(t.qtyissue, 0)), 0) AS total_issued_qty
-            FROM view_issue_engine t
+              NVL(SUM(NVL(t.qtyissued, 0)), 0) AS total_issued_qty
+            FROM view_itemtran_engine t
             WHERE ${DASHBOARD_ISSUE_WHERE}
             `,
             [],

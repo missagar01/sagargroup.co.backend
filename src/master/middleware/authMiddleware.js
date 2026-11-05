@@ -60,6 +60,8 @@ function isDatabaseConnectivityError(error) {
         message.includes("could not translate host name") ||
         message.includes("connection terminated") ||
         message.includes("connection timeout") ||
+        message.includes("timeout exceeded when trying to connect") ||
+        message.includes("timed out trying to connect") ||
         message.includes("timeout expired") ||
         message.includes("failed to connect")
     );

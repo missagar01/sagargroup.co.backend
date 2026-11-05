@@ -27,6 +27,22 @@ const parseDepartments = (value) => {
     .filter(Boolean);
 };
 
+const mergeDepartmentLists = (...departmentGroups) => {
+  const seen = new Set();
+  const merged = [];
+
+  departmentGroups.flat().forEach((department) => {
+    const normalized = String(department || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    merged.push(String(department).replace(/\s+/g, ' ').trim());
+  });
+
+  return merged;
+};
+
 
 const resolveDepartment = (req) => {
   // Express lowercases all header names, so 'x-user-role' becomes 'x-user-role'
@@ -37,8 +53,10 @@ const resolveDepartment = (req) => {
   // Log all relevant headers for debugging
   const relevantHeaders = {
     'x-user-role': req.headers['x-user-role'],
+    'x-user-department': req.headers['x-user-department'],
     'x-user-access1': req.headers['x-user-access1'],
     'x-user-access': req.headers['x-user-access'],
+    'x-verify-access-dept': req.headers['x-verify-access-dept'],
     'X-User-Role': req.headers['X-User-Role'],
     'X-User-Access1': req.headers['X-User-Access1'],
     'X-User-Access': req.headers['X-User-Access']
@@ -48,42 +66,37 @@ const resolveDepartment = (req) => {
   // IGNORE query department parameter - users cannot override their department access
   // Return all departments from user_access1 so user can see all their department data
   if (roleLower === 'user') {
-    // Get user_access1 from header or query parameter (not from JWT token)
-    // Try both lowercase and original case, and decode URL-encoded values
+    const userDepartment = decodeHeader(
+      req.headers['x-user-department'] || req.headers['X-User-Department'] || ''
+    );
     const userAccess1Raw = req.headers['x-user-access1'] || req.headers['X-User-Access1'] || req.query?.user_access1 || '';
     const userAccess1 = decodeHeader(userAccess1Raw);
-    if (userAccess1) {
-      const departments = parseDepartments(userAccess1);
-      if (departments.length > 0) {
-        logger.info({ 
-          userAccess1, 
-          parsedDepartments: departments,
-          departmentCount: departments.length,
-          role: 'user',
-          queryDept: req.query?.department,
-          headers: relevantHeaders,
-          note: 'Query department parameter ignored for user role - using user_access1 from header/query'
-        }, 'User department resolved from user_access1 header/query (query dept ignored)');
-        return departments;
-      }
-    }
-    // Fallback to user_access if user_access1 is not available
     const userAccessRaw = req.headers['x-user-access'] || req.headers['X-User-Access'] || req.query?.user_access || '';
     const userAccess = decodeHeader(userAccessRaw);
-    if (userAccess) {
-      const departments = parseDepartments(userAccess);
-      if (departments.length > 0) {
-        logger.info({ 
-          userAccess, 
-          parsedDepartments: departments,
-          departmentCount: departments.length,
-          role: 'user',
-          queryDept: req.query?.department,
-          headers: relevantHeaders,
-          note: 'Query department parameter ignored for user role - using user_access from header/query'
-        }, 'User department resolved from user_access header/query (query dept ignored)');
-        return departments;
-      }
+    const verifyAccessDept = decodeHeader(
+      req.headers['x-verify-access-dept'] || req.headers['X-Verify-Access-Dept'] || req.query?.verify_access_dept || ''
+    );
+    const departments = mergeDepartmentLists(
+      parseDepartments(userDepartment),
+      parseDepartments(userAccess1),
+      parseDepartments(userAccess),
+      parseDepartments(verifyAccessDept)
+    );
+
+    if (departments.length > 0) {
+      logger.info({
+        userDepartment,
+        userAccess1,
+        userAccess,
+        verifyAccessDept,
+        parsedDepartments: departments,
+        departmentCount: departments.length,
+        role: 'user',
+        queryDept: req.query?.department,
+        headers: relevantHeaders,
+        note: 'Query department parameter ignored for user role - using merged housekeeping access from headers'
+      }, 'User department resolved from merged housekeeping access (query dept ignored)');
+      return departments;
     }
     // If no departments found, return null to show no data (user should have at least one department)
     logger.warn({ 

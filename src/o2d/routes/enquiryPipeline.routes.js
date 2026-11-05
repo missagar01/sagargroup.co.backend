@@ -6,6 +6,8 @@ const router = Router();
 router.get("/", enquiryPipelineController.getAllEnquiries);
 router.get("/:id", enquiryPipelineController.getEnquiry);
 router.post("/", enquiryPipelineController.createEnquiry);
+router.put("/:id", enquiryPipelineController.updateEnquiry);
+router.delete("/:id", enquiryPipelineController.deleteEnquiry);
 router.patch("/:id/stage/:stage/complete", enquiryPipelineController.completeStage);
 
 module.exports = router;

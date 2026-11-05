@@ -4,6 +4,8 @@ const { loginQuery } = require("../../../config/pg.js");
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
 const ENFORCE_SINGLE_SESSION = String(process.env.ENFORCE_SINGLE_SESSION || "").toLowerCase() === "true";
 
+
+
 const FAST_USER_SELECT_QUERY = `
   SELECT
     id,

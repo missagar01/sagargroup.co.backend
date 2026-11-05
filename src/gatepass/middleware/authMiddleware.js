@@ -15,7 +15,7 @@ function getJwtSecret() {
 function extractToken(req) {
     const authHeader = req.headers.authorization || req.headers.Authorization;
     if (!authHeader || typeof authHeader !== "string") {
-        return null;
+        return null; 
     }
 
     if (authHeader.toLowerCase().startsWith("bearer ")) {

@@ -53,7 +53,7 @@ client.on("end", () => {
 })();
 
 function isAvailable() {
-  return redisEnabled && client.isOpen;
+  return redisEnabled && Boolean(client.isReady);
 }
 
 module.exports = {

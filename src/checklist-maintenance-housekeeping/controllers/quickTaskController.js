@@ -37,12 +37,17 @@ export const fetchChecklist = async (
 
     const whereClause = filters.join(" AND ");
 
-    // Using DISTINCT ON to get exactly one record per name/task_description
     const dataQuery = `
-      SELECT DISTINCT ON (LOWER(name), LOWER(task_description)) *
+      SELECT DISTINCT ON (
+        LOWER(TRIM(COALESCE(name, ''))),
+        LOWER(REGEXP_REPLACE(TRIM(COALESCE(task_description, '')), '\\s+', ' ', 'g'))
+      ) *
       FROM checklist
       WHERE ${whereClause}
-      ORDER BY LOWER(name), LOWER(task_description), task_start_date ASC
+      ORDER BY
+        LOWER(TRIM(COALESCE(name, ''))),
+        LOWER(REGEXP_REPLACE(TRIM(COALESCE(task_description, '')), '\\s+', ' ', 'g')),
+        task_start_date ASC
       LIMIT $${paramIndex++}
       OFFSET $${paramIndex}
     `;
@@ -54,7 +59,9 @@ export const fetchChecklist = async (
         SELECT 1
         FROM checklist
         WHERE ${whereClause}
-        GROUP BY LOWER(name), LOWER(task_description)
+        GROUP BY
+          LOWER(TRIM(COALESCE(name, ''))),
+          LOWER(REGEXP_REPLACE(TRIM(COALESCE(task_description, '')), '\\s+', ' ', 'g'))
       ) AS subquery
     `;
 
@@ -100,12 +107,17 @@ export const fetchDelegation = async (
 
     const whereClause = filters.join(" AND ");
 
-    // Using DISTINCT ON to get exactly one record per name/task_description
     const dataQuery = `
-      SELECT DISTINCT ON (LOWER(name), LOWER(task_description)) *
+      SELECT DISTINCT ON (
+        LOWER(TRIM(COALESCE(name, ''))),
+        LOWER(REGEXP_REPLACE(TRIM(COALESCE(task_description, '')), '\\s+', ' ', 'g'))
+      ) *
       FROM delegation
       WHERE ${whereClause}
-      ORDER BY LOWER(name), LOWER(task_description), task_start_date ASC
+      ORDER BY
+        LOWER(TRIM(COALESCE(name, ''))),
+        LOWER(REGEXP_REPLACE(TRIM(COALESCE(task_description, '')), '\\s+', ' ', 'g')),
+        task_start_date ASC
       LIMIT $${paramIndex++}
       OFFSET $${paramIndex}
     `;
@@ -117,7 +129,9 @@ export const fetchDelegation = async (
         SELECT 1
         FROM delegation
         WHERE ${whereClause}
-        GROUP BY LOWER(name), LOWER(task_description)
+        GROUP BY
+          LOWER(TRIM(COALESCE(name, ''))),
+          LOWER(REGEXP_REPLACE(TRIM(COALESCE(task_description, '')), '\\s+', ' ', 'g'))
       ) AS subquery
     `;
 
@@ -163,25 +177,49 @@ export const fetchMaintenance = async (
     const whereClause = filters.join(" AND ");
 
     const dataQuery = `
-      SELECT DISTINCT ON (LOWER(COALESCE(doer_name, '')), LOWER(COALESCE(description, '')))
-        id AS task_id,
-        COALESCE(doer_department, machine_department) AS department,
+      WITH ranked_tasks AS (
+        SELECT
+          id AS task_id,
+          COALESCE(doer_department, machine_department) AS department,
+          given_by,
+          doer_name AS name,
+          description AS task_description,
+          task_start_date,
+          actual_date AS submission_date,
+          frequency,
+          task_type,
+          priority,
+          machine_name,
+          serial_no,
+          task_status AS status,
+          ROW_NUMBER() OVER (
+            PARTITION BY
+              LOWER(TRIM(COALESCE(doer_name, ''))),
+              LOWER(REGEXP_REPLACE(TRIM(COALESCE(description, '')), '\\s+', ' ', 'g'))
+            ORDER BY task_start_date ASC, id ASC
+          ) AS rn
+        FROM maintenance_task_assign
+        WHERE ${whereClause}
+      )
+      SELECT
+        task_id,
+        department,
         given_by,
-        doer_name AS name,
-        description AS task_description,
+        name,
+        task_description,
         task_start_date,
-        actual_date AS submission_date,
+        submission_date,
         frequency,
         task_type,
         priority,
         machine_name,
         serial_no,
-        task_status AS status
-      FROM maintenance_task_assign
-      WHERE ${whereClause}
+        status
+      FROM ranked_tasks
+      WHERE rn = 1
       ORDER BY
-        LOWER(COALESCE(doer_name, '')),
-        LOWER(COALESCE(description, '')),
+        LOWER(TRIM(COALESCE(name, ''))),
+        LOWER(REGEXP_REPLACE(TRIM(COALESCE(task_description, '')), '\\s+', ' ', 'g')),
         task_start_date ASC
       LIMIT $${paramIndex++}
       OFFSET $${paramIndex}
@@ -194,7 +232,9 @@ export const fetchMaintenance = async (
         SELECT 1
         FROM maintenance_task_assign
         WHERE ${whereClause}
-        GROUP BY LOWER(COALESCE(doer_name, '')), LOWER(COALESCE(description, ''))
+        GROUP BY
+          LOWER(TRIM(COALESCE(doer_name, ''))),
+          LOWER(REGEXP_REPLACE(TRIM(COALESCE(description, '')), '\\s+', ' ', 'g'))
       ) AS subquery
     `;
 
@@ -244,7 +284,10 @@ export const fetchHousekeeping = async (
     const whereClause = filters.join(" AND ");
 
     const dataQuery = `
-      SELECT DISTINCT ON (LOWER(COALESCE(name, '')), LOWER(COALESCE(task_description, '')))
+      SELECT DISTINCT ON (
+        LOWER(TRIM(COALESCE(name, ''))),
+        LOWER(REGEXP_REPLACE(TRIM(COALESCE(task_description, '')), '\\s+', ' ', 'g'))
+      )
         COALESCE(task_id, id::text) AS task_id,
         department,
         given_by,
@@ -261,8 +304,8 @@ export const fetchHousekeeping = async (
       FROM assign_task
       WHERE ${whereClause}
       ORDER BY
-        LOWER(COALESCE(name, '')),
-        LOWER(COALESCE(task_description, '')),
+        LOWER(TRIM(COALESCE(name, ''))),
+        LOWER(REGEXP_REPLACE(TRIM(COALESCE(task_description, '')), '\\s+', ' ', 'g')),
         task_start_date ASC
       LIMIT $${paramIndex++}
       OFFSET $${paramIndex}
@@ -275,7 +318,9 @@ export const fetchHousekeeping = async (
         SELECT 1
         FROM assign_task
         WHERE ${whereClause}
-        GROUP BY LOWER(COALESCE(name, '')), LOWER(COALESCE(task_description, ''))
+        GROUP BY
+          LOWER(TRIM(COALESCE(name, ''))),
+          LOWER(REGEXP_REPLACE(TRIM(COALESCE(task_description, '')), '\\s+', ' ', 'g'))
       ) AS subquery
     `;
 
@@ -753,15 +798,17 @@ export const fetchDepartments = async () => {
       WHERE department IS NOT NULL AND department <> ''
     `;
 
+    // maintenance_task_assign has no plain "department" column - the department
+    // lives in doer_department (see getUniqueMaintenanceDepartments).
     const maintenanceSql = `
-      SELECT DISTINCT department 
-      FROM maintenance_task_assign 
-      WHERE department IS NOT NULL AND department <> ''
+      SELECT DISTINCT doer_department AS department
+      FROM maintenance_task_assign
+      WHERE doer_department IS NOT NULL AND doer_department <> ''
     `;
 
     const housekeepingSql = `
-      SELECT DISTINCT department 
-      FROM assign_task 
+      SELECT DISTINCT department
+      FROM assign_task
       WHERE department IS NOT NULL AND department <> ''
     `;
 

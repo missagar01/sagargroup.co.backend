@@ -494,9 +494,10 @@ async function fetchOracleDashboardSummary() {
       const issueRows = await executeOracleRows(
         conn,
         `
-          SELECT NVL(SUM(NVL(t.qtyissue, 0)), 0) AS TOTAL_ISSUED_QTY
-          FROM view_issue_engine t
+          SELECT NVL(SUM(NVL(t.qtyissued, 0)), 0) AS TOTAL_ISSUED_QTY
+          FROM view_itemtran_engine t
           WHERE t.entity_code = 'SR'
+            AND t.trantype = 'MS'
             AND t.vrdate >= ${DASHBOARD_ORACLE_START_SQL}
         `
       );

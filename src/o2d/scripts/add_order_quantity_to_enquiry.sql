@@ -1,0 +1,2 @@
+ALTER TABLE enquiry
+ADD COLUMN IF NOT EXISTS order_quantity NUMERIC(14, 2);
