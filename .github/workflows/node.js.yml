@@ -1,13 +1,10 @@
 name: Deploy sagargroup backend
 
 on:
+  push:
+    branches: [master]
   workflow_dispatch:
-    inputs:
-      oracle_recovery_verified:
-        description: Both Oracle pools passed live queries after SSH reconnect in staging
-        type: boolean
-        required: true
-        default: false
+
 
 concurrency:
   group: sagargroup-backend-production
@@ -15,7 +12,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.ref == 'refs/heads/master' && inputs.oracle_recovery_verified
+    if: github.ref == 'refs/heads/master'
     runs-on: [self-hosted, Linux, X64]
 
     steps:
