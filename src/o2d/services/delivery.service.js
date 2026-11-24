@@ -78,7 +78,7 @@ SELECT
     TRUNC(
         t.contract_vrdate + 
         CASE 
-            WHEN t.contract_qty < 51 THEN 7
+            WHEN t.contract_qty < 51 THEN 73
             WHEN t.contract_qty BETWEEN 51 AND 100 THEN 14
             WHEN t.contract_qty > 100 THEN 20
             ELSE 0

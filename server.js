@@ -1,158 +1,79 @@
 const http = require("http");
 const path = require("path");
-const dotenv = require("dotenv");
 const { Server: SocketIOServer } = require("socket.io");
 
-dotenv.config({
-  path: path.join(__dirname, ".env"),
-  quiet: true,
-});
+require("dotenv").config({ path: path.join(__dirname, ".env"), quiet: true });
 
-// Safely try to load Oracle config
-let initPool, closePool;
-try {
-  ({ initPool, closePool } = require("./src/o2d/config/db.js"));
-} catch (err) {
-  console.warn("⚠️ Could not load O2D configuration (db.js):", err.message);
-  console.warn("⚠️ O2D Oracle functionality will be disabled.");
-  // Mock functions to prevent crashes
-  initPool = async () => { throw new Error("Oracle module not loaded (file missing or dependency error)"); };
-  closePool = async () => { };
-}
-const { getPgPool, closePgPool, resetPool } = require("./config/pg.js");
-const { connectDatabase, connectAuthDatabase } = require("./config/database.js");
-const { initSSHTunnel, closeSSHTunnel } = require("./config/sshTunnel.js");
-const redisClient = require("./config/redis.js");
-const LEGACY_IOT_MODULE_ENABLED =
-  process.env.ENABLE_IOT_MODULE !== "false";
-const IOT_MQTT_DASHBOARD_ENABLED =
-  LEGACY_IOT_MODULE_ENABLED &&
+const o2dOracle = require("./src/o2d/config/db");
+const { connectDatabase, connectAuthDatabase } = require("./config/database");
+const { closePostgresPools } = require("./config/postgresPool");
+const { initSSHTunnel, closeSSHTunnel, onTunnelStateChange } = require("./config/sshTunnel");
+const redisClient = require("./config/redis");
+const app = require("./src/app");
+
+const iotEnabled = process.env.ENABLE_IOT_MODULE !== "false" &&
   process.env.ENABLE_IOT_MQTT_DASHBOARD === "true";
-let getSocketCorsOptions = () => ({ origin: true, methods: ["GET", "POST"] });
-let initializeIotModule = async () => {};
-let shutdownIotModule = async () => {};
-
-if (IOT_MQTT_DASHBOARD_ENABLED) {
-  ({
-    getSocketCorsOptions,
-    initializeIotModule,
-    shutdownIotModule,
-  } = require("./src/iot"));
-} else {
-  console.log(
-    "IoT MQTT dashboard disabled. Set ENABLE_IOT_MQTT_DASHBOARD=true to enable it."
-  );
-}
-
-const port = Number(process.env.PORT || 3004); // Server Port
+const iot = iotEnabled ? require("./src/iot") : null;
+const port = Number(process.env.PORT || 3004);
 const DEPLOY_MODE = process.env.DEPLOY_MODE === "true";
 
-let checklistSyncModulesPromise = null;
+let stopping = false;
+let deviceSyncTimer;
+let deviceSyncRun;
+let checklistSyncModulesPromise;
 async function loadChecklistSyncModules() {
-  if (!checklistSyncModulesPromise) {
-    checklistSyncModulesPromise = import(
-      "./src/checklist-maintenance-housekeeping/services/deviceSync.js"
-    ).then((deviceSyncMod) => ({
-      refreshDeviceSync: deviceSyncMod.refreshDeviceSync,
-    }));
-  }
-
+  checklistSyncModulesPromise ??= import("./src/checklist-maintenance-housekeeping/services/deviceSync.js");
   return checklistSyncModulesPromise;
 }
 
-let storeDbModulePromise = null;
-async function loadStoreDbModule() {
-  if (!storeDbModulePromise) {
-    storeDbModulePromise = import("./src/store/src/config/db.js").catch((error) => {
-      storeDbModulePromise = null;
-      throw error;
-    });
-  }
+let storeOracleModule;
+const loadStoreOracle = () => {
+  storeOracleModule ??= import("./src/store/src/config/db.js");
+  return storeOracleModule;
+};
 
-  return storeDbModulePromise;
-}
+const pendingBootstrap = new Map([
+  ["Main PostgreSQL", connectDatabase],
+  ["Auth PostgreSQL", connectAuthDatabase],
+  ["Store PostgreSQL", async () => {
+    const { initStorePostgresSchema } = await import("./src/store/src/config/postgresSchema.js");
+    await initStorePostgresSchema();
+  }],
+]);
+let bootstrapRunning = false;
+let bootstrapTimer;
 
-let storePostgresSchemaModulePromise = null;
-async function loadStorePostgresSchemaModule() {
-  if (!storePostgresSchemaModulePromise) {
-    storePostgresSchemaModulePromise = import("./src/store/src/config/postgresSchema.js").catch((error) => {
-      storePostgresSchemaModulePromise = null;
-      throw error;
-    });
-  }
-
-  return storePostgresSchemaModulePromise;
-}
-
-async function ensurePostgresConnection() {
-  const maxRetries = 3;
-  let lastError;
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const pool = getPgPool();
-      const client = await Promise.race([
-        pool.connect(),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Connection timeout')), 10000)
-        )
-      ]);
-      client.release();
-      console.log("✅ Postgres connection pool ready");
-      return;
-    } catch (err) {
-      lastError = err;
-      console.warn(`⚠️ Postgres connection attempt ${attempt}/${maxRetries} failed:`, err.message);
-
-      if (attempt < maxRetries) {
-        resetPool(); // Reset pool before retry
-        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
-        console.log(`🔄 Retrying in ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
+async function bootstrapDatabases() {
+  if (stopping || bootstrapRunning || !pendingBootstrap.size) return;
+  clearTimeout(bootstrapTimer);
+  bootstrapRunning = true;
+  try {
+    for (const [name, initialize] of pendingBootstrap) {
+      if (stopping) return;
+      try {
+        await initialize();
+        pendingBootstrap.delete(name);
+      } catch (error) {
+        console.warn("[Database] Initialization will retry", name, error.code || error.name);
       }
     }
-  }
-
-  console.error("❌ Postgres initialization failed after all retries:", lastError);
-  throw lastError;
-}
-
-async function closeDatabases() {
-  try {
-    const closeStorePoolPromise = loadStoreDbModule()
-      .then((module) => (typeof module.closePool === "function" ? module.closePool() : undefined))
-      .catch((error) => {
-        console.warn("Store Oracle shutdown skipped:", error.message);
-      });
-
-    await Promise.all([
-      closePool(),
-      closeStorePoolPromise,
-      closePgPool(),
-      closeSSHTunnel(),
-      redisClient.quit(),
-      shutdownIotModule(),
-    ]);
-  } catch (err) {
-    console.error("⚠️ Error closing database connections:", err);
+  } finally {
+    bootstrapRunning = false;
+    if (!stopping && pendingBootstrap.size) {
+      bootstrapTimer = setTimeout(bootstrapDatabases, 30000);
+      bootstrapTimer.unref();
+    }
   }
 }
 
-// Import CommonJS app module
-const app = require("./src/app.js");
+function warmOracle() {
+  if (stopping || process.env.ENABLE_ORACLE === "false") return;
+  const warmups = [o2dOracle.initPool(), loadStoreOracle().then((module) => module.initPool())];
+  for (const warmup of warmups) {
+    void warmup.catch((error) => console.warn("[Oracle] Pool warmup failed:", error.code || error.name));
+  }
+}
 
-app.get("/health", (req, res) => {
-  res.status(200).json({
-    status: "ok",
-    uptime: process.uptime(),
-    pid: process.pid,
-    deployMode: DEPLOY_MODE,
-  });
-});
-
-/* =======================
-   DEVICE SYNC (SAFE)
-======================= */
 const DEVICE_SYNC_INTERVAL_MS = Number(
   process.env.DEVICE_SYNC_INTERVAL_MS || 5 * 60 * 1000
 );
@@ -216,154 +137,87 @@ if (DEVICE_SYNC_ENABLED) {
 
   };
 
-  // Deploy mode me ye block execute hi nahi hota
-  runDeviceSync();
-  setInterval(runDeviceSync, DEVICE_SYNC_INTERVAL_MS);
+
+  const tick = () => { if (!isSyncRunning) deviceSyncRun = runDeviceSync(); };
+  tick();
+  deviceSyncTimer = setInterval(tick, DEVICE_SYNC_INTERVAL_MS);
 } else {
   console.log("⏸️ Device sync disabled (DEPLOY MODE)");
 }
 
-console.log("DEPLOY_MODE:", DEPLOY_MODE);
-console.log("DEVICE_SYNC_ENABLED:", DEVICE_SYNC_ENABLED);
-console.log("DEVICE_SYNC_INTERVAL_MS:", DEVICE_SYNC_INTERVAL_MS);
 
-const httpServer = http.createServer(app); 
+const httpServer = http.createServer(app);
 const io = new SocketIOServer(httpServer, {
-  cors: getSocketCorsOptions(),
+  cors: iot?.getSocketCorsOptions() ?? { origin: true, methods: ["GET", "POST"] },
 });
 
 httpServer.on("error", (error) => {
-  if (error?.code === "EADDRINUSE") {
-    console.error(`Port ${port} is already in use. Stop the existing process or change PORT in backend/.env.`);
-    process.exit(1);
-  }
-
-  console.error("HTTP server failed to start:", error);
+  console.error("[HTTP] Server error:", error.code || error.name);
   process.exit(1);
 });
 
-const server = httpServer.listen(port, async () => {
-  try {
-    // Initialize SSH tunnel first (if SSH_HOST is configured)
-    // Make it optional - don't fail server startup if SSH is unavailable
-    if (process.env.SSH_HOST) {
-      console.log("🔐 Initializing SSH tunnel for all services...");
-      try {
-        await initSSHTunnel();
-        // Wait longer for tunnels to be fully established and ready
-        console.log("⏳ Waiting for tunnels to stabilize...");
-        await new Promise(resolve => setTimeout(resolve, 8000)); // Increased wait time
-        console.log("✅ SSH tunnel established successfully");
-        // Reset PostgreSQL pool to use tunnel
-        resetPool();
-        console.log("🔄 PostgreSQL pool reset to use tunnel");
-      } catch (sshErr) {
-        console.warn("⚠️ SSH tunnel initialization failed, continuing without tunnel:", sshErr.message);
-        console.warn("⚠️ Databases will attempt direct connection if configured");
-      }
-    }
-
-    // Then initialize all database connections
-    // Initialize Oracle first (make it optional - don't fail server startup)
-    console.log("📡 Initializing Oracle database connection...");
-    try {
-      const o2dPool = await initPool();
-      if (o2dPool) {
-        console.log("✅ Oracle database connection established");
-      } else {
-        console.warn("⚠️ Oracle database initialization was skipped; O2D endpoints will stay unavailable");
-      }
-    } catch (oracleErr) {
-      console.error("❌ Oracle connection failed, continuing without it:", oracleErr.message);
-      console.error("⚠️ O2D module endpoints will not work without Oracle connection");
-      console.error("⚠️ Check your .env file - ensure ORACLE_USER, ORACLE_PASSWORD, and ORACLE_CONNECTION_STRING are set correctly");
-      // Don't exit - let the server start, Oracle will fail gracefully when routes are accessed
-    }
-
-    console.log("📡 Initializing Store Oracle database connection...");
-    try {
-      const { initPool: initStorePool } = await loadStoreDbModule();
-      const storePool = await initStorePool();
-      if (storePool) {
-        console.log("✅ Store Oracle database connection established");
-      } else {
-        console.warn("⚠️ Store Oracle initialization was skipped; store Oracle endpoints will stay unavailable");
-      }
-    } catch (storeOracleErr) {
-      console.error("❌ Store Oracle connection failed, continuing without it:", storeOracleErr.message);
-      console.error("⚠️ Store Oracle-backed endpoints will not work without database connection");
-    }
-
-    // Additional delay to ensure tunnel is fully ready for PostgreSQL connections
-    await new Promise(resolve => setTimeout(resolve, 3004)); // Increased wait time
-
-    // Initialize PostgreSQL connections sequentially to avoid overwhelming the tunnel
-    // Make them optional - don't fail server startup if PostgreSQL is unavailable
-    console.log("📡 Connecting to PostgreSQL databases...");
-
-    try {
-      await ensurePostgresConnection();
-    } catch (pgErr) {
-      console.warn("⚠️ PostgreSQL connection failed, continuing without it:", pgErr.message);
-    }
-
-    try {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      await connectDatabase();
-      console.log("✅ Main database (batchcode/lead-to-order) connection established");
-    } catch (dbErr) {
-      console.error("❌ Main database connection failed:", dbErr.message);
-      console.error("⚠️ Batchcode and lead-to-order modules may not work without database connection");
-      console.error("⚠️ Check your .env file - ensure PG_HOST, PG_USER, PG_PASSWORD, PG_DATABASE are set correctly");
-      // Don't exit - let it try to initialize on-demand with getPool()
-    }
-
-    try {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      await connectAuthDatabase();
-    } catch (authErr) {
-      console.warn("⚠️ Auth database connection failed, continuing without it:", authErr.message);
-    }
-
-    try {
-      const { initStorePostgresSchema } = await loadStorePostgresSchemaModule();
-      await initStorePostgresSchema();
-    } catch (storePgErr) {
-      console.warn("âš ï¸ Store PostgreSQL schema initialization failed:", storePgErr.message);
-    }
-
-    await initializeIotModule(io);
-
-    if (process.env.REDIS_URL) {
-      console.log("📡 Redis initialized (background connection)...");
-      // The new redis client connects automatically. 
-      // We just check if it's available after a short delay or trust the internal state.
-      if (redisClient.isAvailable()) {
-        console.log("✅ Redis client is ready");
-      } else {
-        console.warn("⚠️ Redis client initialized but not yet connected (this is normal for background connection)");
-      }
-    } else {
-      console.log("ℹ️ Redis not configured (REDIS_URL not set), caching disabled");
-    }
-
-    console.log(`🚀 Server running at http://localhost:${port}`);
-  } catch (err) {
-    console.error("❌ Failed to start server:", err);
-    await closeDatabases();
-    process.exit(1);
+httpServer.listen(port, () => {
+  console.info("[HTTP] Listening on port", port);
+  if (process.send) process.send("ready");
+  if (process.env.ENABLE_ORACLE !== "false") {
+    void loadStoreOracle().catch(() => console.warn("[Oracle] Store pool module could not be loaded"));
   }
+
+  if (process.env.SSH_HOST) {
+    onTunnelStateChange(({ type }) => {
+      if (type === "connected") {
+        warmOracle();
+        void bootstrapDatabases();
+      }
+    });
+    void initSSHTunnel().catch(() => {
+      warmOracle();
+    });
+  } else {
+    warmOracle();
+  }
+  void bootstrapDatabases();
+  void iot?.initializeIotModule(io).catch((error) => {
+    console.warn("[IoT] Initialization failed:", error.code || error.name);
+  });
 });
 
-const handleSignal = (signal) => async () => {
-  console.log(`⚠️ ${signal} received, shutting down...`);
-  await closeDatabases();
-  server.close(() => {
-    console.log("✅ Server closed");
-    process.exit(0);
-  });
-};
+async function shutdown(signal) {
+  if (stopping) return;
+  stopping = true;
+  clearInterval(deviceSyncTimer);
+  clearTimeout(bootstrapTimer);
+  console.info("[HTTP] Shutting down", signal);
 
-process.on("SIGTERM", handleSignal("SIGTERM"));
-// Force server restart
-process.on("SIGINT", handleSignal("SIGINT"));
+  const hardDeadline = setTimeout(() => {
+    console.error("[HTTP] Shutdown deadline exceeded");
+    process.exit(1);
+  }, 28000);
+
+  let drainTimer;
+  const httpDrained = io.close().catch(() => {});
+  await Promise.race([
+    Promise.allSettled([httpDrained, deviceSyncRun]),
+    new Promise((resolve) => { drainTimer = setTimeout(resolve, 15000); }),
+  ]);
+  clearTimeout(drainTimer);
+  httpServer.closeAllConnections();
+
+  const close = [
+    o2dOracle.closePool,
+    () => storeOracleModule?.then((module) => module.closePool()),
+    closePostgresPools,
+    redisClient.quit,
+    () => iot?.shutdownIotModule(),
+    closeSSHTunnel,
+  ];
+  const cleanup = await Promise.allSettled(close.map(async (closeResource) => closeResource()));
+  clearTimeout(hardDeadline);
+
+  const failed = cleanup.some((result) => result.status === "rejected");
+  if (failed) console.error("[HTTP] One or more shutdown operations failed");
+  process.exit(failed ? 1 : 0);
+}
+
+process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
+process.on("SIGINT", () => { void shutdown("SIGINT"); });

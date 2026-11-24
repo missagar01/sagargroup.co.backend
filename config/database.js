@@ -1,88 +1,34 @@
-const { Pool } = require('pg');
 const config = require('./env');
 const { logger } = require('../utils/logger.cjs');
-const { getLocalPostgresPort, isTunnelActive } = require('./sshTunnel');
+const { createManagedPool, usesPostgresTunnel } = require('./postgresPool');
 
-let mainPool;
-let authPool;
-
-
-// Function to reset main pool (useful for connection errors)
-const resetMainPool = () => {
-  if (mainPool) {
-    logger.warn('🔄 Resetting main database pool due to connection error');
-    mainPool.end().catch(() => {
-      // Ignore errors during pool shutdown
-    });
-    mainPool = null;
-  }
-};
-
-const shouldUsePostgresTunnel = ({ host, isRDS }) => {
-  if (!process.env.SSH_HOST || !isTunnelActive()) {
-    return false;
-  }
-
-  const tunnelPreference = String(
-    process.env.PG_USE_SSH_TUNNEL ||
-    process.env.DB_USE_SSH_TUNNEL ||
-    ""
-  ).toLowerCase();
-
-  if (["true", "1", "yes"].includes(tunnelPreference)) {
-    return true;
-  }
-
-  if (["false", "0", "no"].includes(tunnelPreference)) {
-    return false;
-  }
-
-  return Boolean(host) && !isRDS;
-};
-
-
-const buildConnectionOptions = (databaseConfig) => {
+function buildConnectionOptions(databaseConfig) {
   if (config.databaseUrl && databaseConfig === config.postgres) {
     return {
       connectionString: config.databaseUrl,
-      ssl: config.postgres.ssl ? { rejectUnauthorized: false } : false
+      ssl: config.postgres.ssl ? { rejectUnauthorized: false } : false,
+      connectionTimeoutMillis: 15000,
     };
   }
 
   const { host, port, user, password, database, ssl } = databaseConfig;
-  if (!host || !user || !database) {
-    return null;
-  }
-
-  // AWS RDS requires SSL, so enable it automatically for RDS hosts
+  if (!host || !user || !database) return null;
   const isRDS = host.includes("rds.amazonaws.com");
-  const useSSL = isRDS || ssl;
-
-  // Optionally force the shared SSH tunnel even for RDS, which is useful on local
-  // environments where direct 5432 access is blocked but the bastion host can reach it.
-  const useTunnel = shouldUsePostgresTunnel({ host, isRDS });
-  const finalHost = useTunnel ? '127.0.0.1' : host;
-  const finalPort = useTunnel ? getLocalPostgresPort() : port;
-
-  if (useTunnel) {
-    logger.info(`📡 Database: Using SSH tunnel (localhost:${finalPort}) for ${database}`);
-  } else {
-    logger.info(`📡 Database: Using direct connection (${finalHost}:${finalPort}) for ${database}${useSSL ? ' (SSL enabled)' : ''}`);
-  }
-
   return {
-    host: finalHost,
-    port: finalPort,
-    user,
-    password,
-    database,
-    ssl: useSSL ? { rejectUnauthorized: false } : false,
-    // Additional connection options for SSH tunnel stability
-    connectionTimeoutMillis: useTunnel ? 30000 : (isRDS ? 20000 : 15000), // Longer timeout for RDS
-    idleTimeoutMillis: 30000,
-    statement_timeout: 30000,
+    host, port, user, password, database,
+    ssl: isRDS || ssl ? { rejectUnauthorized: false } : false,
+    connectionTimeoutMillis: isRDS ? 20000 : 15000,
   };
-};
+}
+
+const mainOptions = buildConnectionOptions(config.postgres);
+const authOptions = buildConnectionOptions(config.authDatabase);
+const mainPool = mainOptions && createManagedPool('Main', () => ({
+  ...mainOptions, max: 10,
+}), { useTunnel: !config.databaseUrl && usesPostgresTunnel(config.postgres.host) });
+const authPool = authOptions && createManagedPool('Auth', () => ({
+  ...authOptions, max: 10, connectionTimeoutMillis: 10000,
+}), { useTunnel: usesPostgresTunnel(config.authDatabase.host) });
 
 const ensureQcLabSamplesTable = async () => {
   const ddl = `
@@ -757,224 +703,58 @@ const ensureAuthUsersTable = async () => {
   logger.info('Ensured auth users table exists with all required columns');
 };
 
-const connectDatabase = async () => {
-  if (mainPool) {
+// Keep bootstrap single-flight. Connectivity failures allow another attempt.
+let mainInitialization;
+let authInitialization;
+
+function connectDatabase() {
+  if (!mainPool) return Promise.resolve(null);
+  mainInitialization ??= (async () => {
+    await mainPool.query('SELECT 1');
+    await ensureQcLabSamplesTable();
+    await ensureSmsRegisterTable();
+    await ensureHotCoilTable();
+    await ensurePipeMillTable();
+    await ensureReCoilerTable();
+    await ensureTundishChecklistTable();
+    await ensureLaddleChecklistTable();
+    await ensureLaddleReturnTable();
+    await ensureLoginTable();
     return mainPool;
-  }
+  })().catch((error) => {
+    mainInitialization = undefined;
+    throw error;
+  });
+  return mainInitialization;
+}
 
-  const options = buildConnectionOptions(config.postgres);
-  if (!options) {
-    logger.warn('Database configuration missing. Skipping main database connection.');
-    return null;
-  }
-
-  // Retry connection with exponential backoff
-  const maxRetries = 3;
-  let lastError;
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      mainPool = new Pool({
-        ...options,
-        connectionTimeoutMillis: options.connectionTimeoutMillis || 30000,
-        idleTimeoutMillis: options.idleTimeoutMillis || 30000,
-        max: 10,
-        // Additional options for stability
-        keepAlive: true,
-        keepAliveInitialDelayMillis: 10000,
-      });
-
-      mainPool.on('error', (error) => {
-        logger.error('Unexpected PostgreSQL client error', error);
-        // Reset pool on error to force reconnection
-        if (error.message.includes('terminated') || error.message.includes('Connection terminated')) {
-          logger.warn('⚠️ Connection terminated, resetting pool');
-          resetMainPool();
-        }
-      });
-
-      // Handle connection errors
-      mainPool.on('connect', (client) => {
-        client.on('error', (err) => {
-          logger.error('PostgreSQL client connection error:', err.message);
-          // Reset pool on client connection errors
-          if (err.message.includes('terminated') || err.message.includes('Connection terminated')) {
-            resetMainPool();
-          }
-        });
-      });
-
-      // Test connection with longer timeout for SSH tunnel
-      const testTimeout = process.env.SSH_HOST ? 30000 : 15000;
-      await Promise.race([
-        mainPool.query('SELECT 1'),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Connection timeout')), testTimeout)
-        )
-      ]);
-
-      logger.info('Main database connection established');
-
-      await ensureQcLabSamplesTable();
-      await ensureSmsRegisterTable();
-      await ensureHotCoilTable();
-      await ensurePipeMillTable();
-      await ensureReCoilerTable();
-      await ensureTundishChecklistTable();
-      await ensureLaddleChecklistTable();
-      await ensureLaddleReturnTable();
-      await ensureLoginTable();
-      return mainPool;
-    } catch (error) {
-      lastError = error;
-      const errorMsg = error.message || 'Unknown error';
-      logger.warn(`Database connection attempt ${attempt}/${maxRetries} failed:`, errorMsg);
-
-      if (mainPool) {
-        try {
-          await mainPool.end();
-        } catch (e) {
-          // Ignore cleanup errors
-        }
-        mainPool = null;
-      }
-
-      if (attempt < maxRetries) {
-        // Longer delay for SSH tunnel connections
-        const baseDelay = process.env.SSH_HOST ? 2000 : 1000;
-        const delay = Math.min(baseDelay * Math.pow(2, attempt - 1), 10000);
-        logger.info(`Retrying in ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-  }
-
-  logger.error('Database connection failed after all retries', lastError);
-  throw lastError;
-};
-
-const connectAuthDatabase = async () => {
-  if (authPool) {
+function connectAuthDatabase() {
+  if (!authPool) return Promise.resolve(null);
+  authInitialization ??= (async () => {
+    await authPool.query('SELECT 1');
+    await ensureAuthUsersTable();
     return authPool;
-  }
+  })().catch((error) => {
+    authInitialization = undefined;
+    throw error;
+  });
+  return authInitialization;
+}
 
-  const options = buildConnectionOptions(config.authDatabase);
-  if (!options) {
-    logger.warn('Auth database configuration missing. Skipping auth database connection.');
-    return null;
-  }
-
-  // Retry connection with exponential backoff
-  const maxRetries = 3;
-  let lastError;
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      authPool = new Pool({
-        ...options,
-        connectionTimeoutMillis: 10000,
-        idleTimeoutMillis: 30000,
-        max: 10,
-      });
-
-      authPool.on('error', (error) => {
-        logger.error('Unexpected PostgreSQL auth client error', error);
-      });
-
-      // Test connection with timeout
-      await Promise.race([
-        authPool.query('SELECT 1'),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Connection timeout')), 10000)
-        )
-      ]);
-
-      logger.info('Auth database connection established');
-      await ensureAuthUsersTable();
-      return authPool;
-    } catch (error) {
-      lastError = error;
-      logger.warn(`Auth database connection attempt ${attempt}/${maxRetries} failed:`, error.message);
-
-      if (authPool) {
-        try {
-          await authPool.end();
-        } catch (e) {
-          // Ignore cleanup errors
-        }
-        authPool = null;
-      }
-
-      if (attempt < maxRetries) {
-        // Longer delay for SSH tunnel connections
-        const baseDelay = process.env.SSH_HOST ? 2000 : 1000;
-        const delay = Math.min(baseDelay * Math.pow(2, attempt - 1), 10000);
-        logger.info(`Retrying in ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-  }
-
-  logger.error('Auth database connection failed after all retries', lastError);
-  throw lastError;
-};
-
-const getPool = () => {
-  if (!mainPool) {
-    // Try to build connection options and create pool synchronously
-    // This handles cases where connectDatabase() hasn't been called yet
-    const options = buildConnectionOptions(config.postgres);
-    if (options) {
-      // Log connection details for debugging (without password)
-      logger.info(`🔌 Creating database pool: ${options.user}@${options.host}:${options.port}/${options.database}`);
-
-      mainPool = new Pool({
-        ...options,
-        connectionTimeoutMillis: options.connectionTimeoutMillis || 30000,
-        idleTimeoutMillis: options.idleTimeoutMillis || 30000,
-        max: 10,
-        // Additional options for stability
-        keepAlive: true,
-        keepAliveInitialDelayMillis: 10000,
-      });
-
-      mainPool.on('error', (error) => {
-        logger.error('Unexpected PostgreSQL client error', error);
-        // Reset pool on error to force reconnection
-        if (error.message.includes('terminated') || error.message.includes('Connection terminated')) {
-          logger.warn('⚠️ Connection terminated, resetting pool');
-          resetMainPool();
-        }
-      });
-
-      // Handle connection errors
-      mainPool.on('connect', (client) => {
-        client.on('error', (err) => {
-          logger.error('PostgreSQL client connection error:', err.message);
-          // Reset pool on client connection errors
-          if (err.message.includes('terminated') || err.message.includes('Connection terminated')) {
-            resetMainPool();
-          }
-        });
-      });
-
-      logger.warn('⚠️ Database pool created on-demand. Consider calling connectDatabase() during server startup.');
-    } else {
-      const missing = [];
-      if (!config.postgres.host) missing.push('DB_HOST');
-      if (!config.postgres.user) missing.push('DB_USER');
-      if (!config.postgres.database) missing.push('DB_NAME');
-      throw new Error(`Database has not been initialized. Missing: ${missing.join(', ')}. Check your .env file.`);
-    }
-  }
+function getPool() {
+  if (!mainPool) throw new Error('Main PostgreSQL configuration is missing');
   return mainPool;
-};
+}
 
-const getAuthPool = () => {
-  if (!authPool) {
-    throw new Error('Auth database has not been initialized. Call connectAuthDatabase() first.');
-  }
+function getAuthPool() {
+  if (!authPool) throw new Error('Auth PostgreSQL configuration is missing');
   return authPool;
-};
+}
 
-module.exports = { connectDatabase, getPool, connectAuthDatabase, getAuthPool, resetMainPool };
+module.exports = {
+  connectDatabase,
+  getPool,
+  connectAuthDatabase,
+  getAuthPool,
+  resetMainPool: () => { void mainPool?.end(); },
+};

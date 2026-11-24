@@ -1,12 +1,8 @@
-import { Pool } from 'pg';
+import { createManagedPool } from "../../../config/postgresPool.js";
 import config from '../utils/config.js';
-import logger from '../utils/logger.js';
 
-export let pool; // was: let pool;
-
-
-if (config.env !== 'test' && config.pg.host) {
-  pool = new Pool({
+export const pool = config.env !== 'test' && config.pg.host
+  ? createManagedPool("Housekeeping", () => ({
     host: config.pg.host,
     port: config.pg.port,
     user: config.pg.user,
@@ -14,27 +10,11 @@ if (config.env !== 'test' && config.pg.host) {
     database: config.pg.database,
     ssl: config.pg.ssl ? { rejectUnauthorized: false } : false,
     max: 10,
-    idleTimeoutMillis: 30_000
-  });
-
-  pool
-    .connect()
-    .then((client) => {
-      client.release();
-      logger.info('PostgreSQL connection pool ready');
-    })
-    .catch((err) => {
-      logger.error({ err }, 'Failed to connect to PostgreSQL');
-    });
-} else if (config.env === 'test') {
-  logger.info('Test environment detected; PostgreSQL pool not initialized');
-} else {
-  logger.warn('PG connection info missing; database pool not initialized');
-}
+    idleTimeoutMillis: 30000,
+  }))
+  : undefined;
 
 export const query = (text, params) => {
-  if (!pool) {
-    throw new Error('PostgreSQL pool not initialized');
-  }
+  if (!pool) throw new Error('PostgreSQL pool not initialized');
   return pool.query(text, params);
 };

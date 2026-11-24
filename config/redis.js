@@ -1,103 +1,89 @@
 const { createClient } = require("redis");
 
-const REDIS_URL = process.env.REDIS_URL;
-
-const client = createClient({
-  url: REDIS_URL,
-  socket: {
-    connectTimeout: 5000,
-    reconnectStrategy: (retries) => Math.min(retries * 100, 3000),
-  },
-});
-
-let redisEnabled = true;
-let lastError = null;
-
-client.on("ready", () => {
-  redisEnabled = true;
-  console.log("Redis ready");
-});
-
-client.on("error", (err) => {
-  redisEnabled = false;
-  const msg = err.message;
-
-  if (msg.includes("ECONNREFUSED")) {
-    if (lastError !== "ECONNREFUSED") {
-      console.warn("Redis connection refused (caching disabled, retrying...)");
-      lastError = "ECONNREFUSED";
-    }
-    return;
-  }
-
-  console.warn("Redis error:", msg);
-  lastError = msg;
-});
-
-client.on("connect", () => {
-  lastError = null;
-});
-
-client.on("end", () => {
-  redisEnabled = false;
-  console.warn("Redis connection closed");
-});
-
-(async () => {
+function connectCache() {
+  if (!process.env.REDIS_URL) return null;
   try {
-    await client.connect();
-  } catch (err) {
-    redisEnabled = false;
-    console.warn("Redis disabled:", err.message);
+    const client = createClient({
+      url: process.env.REDIS_URL,
+      disableOfflineQueue: true,
+      commandsQueueMaxLength: 1000,
+      pingInterval: 5000,
+      socket: {
+        connectTimeout: 5000,
+        socketTimeout: 10000,
+        reconnectStrategy: (retries) => retries > 5 ? 30000 : Math.min(500 * 2 ** retries, 5000),
+      },
+    });
+    let lastErrorLog = 0;
+    client.on("error", (error) => {
+      if (Date.now() - lastErrorLog < 30000) return;
+      lastErrorLog = Date.now();
+      console.warn("[Redis] Cache connection error:", error.code || error.name);
+    });
+    client.on("ready", () => console.info("[Redis] Cache ready"));
+    void client.connect().catch(() => {});
+    return client;
+  } catch {
+    console.warn("[Redis] Cache configuration could not be loaded");
+    return null;
   }
-})();
+}
 
-function isAvailable() {
-  return redisEnabled && Boolean(client.isReady);
+const client = connectCache();
+const isAvailable = () => Boolean(client?.isReady);
+
+async function withCommandTimeout(command) {
+  let timer;
+  try {
+    return await Promise.race([
+      command,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Redis cache command timed out")), 2000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 module.exports = {
+  client,
   isAvailable,
 
   async get(key) {
     if (!isAvailable()) return null;
-    return client.get(key);
+    return withCommandTimeout(client.get(key));
   },
 
   async set(key, value) {
     if (!isAvailable()) return null;
-    return client.set(key, value);
+    return withCommandTimeout(client.set(key, value));
   },
 
   async setEx(key, ttl, value) {
     if (!isAvailable()) return null;
-    return client.setEx(key, ttl, value);
+    return withCommandTimeout(client.setEx(key, ttl, value));
   },
 
   async del(key) {
     if (!isAvailable()) return null;
-    return client.del(key);
+    return withCommandTimeout(client.del(key));
   },
 
   async deletePattern(pattern) {
     if (!isAvailable()) return 0;
-
-    const keys = [];
-    for await (const matchedKey of client.scanIterator({
-      MATCH: pattern,
-      COUNT: 100,
-    })) {
-      keys.push(matchedKey);
-    }
-
-    if (!keys.length) {
-      return 0;
-    }
-
-    return client.del(keys);
+    let deleted = 0;
+    let cursor = "0";
+    do {
+      const page = await withCommandTimeout(client.scan(cursor, { MATCH: pattern, COUNT: 100 }));
+      if (page.keys.length) deleted += await withCommandTimeout(client.del(page.keys));
+      cursor = page.cursor;
+    } while (cursor !== "0");
+    return deleted;
   },
 
   async quit() {
-    if (client.isOpen) await client.quit();
+    // Requests have drained. Drop any remaining best-effort cache commands.
+    if (client?.isOpen) client.destroy();
   },
 };

@@ -55,7 +55,7 @@ async function setCached(key, data, ttl = DEFAULT_TTL.PENDING) {
   // Set in Redis
   if (redis.isAvailable()) {
     try {
-      redis.setEx(key, ttl, JSON.stringify(data));
+      void redis.setEx(key, ttl, JSON.stringify(data)).catch(() => {});
     } catch {
       // ignore
     }

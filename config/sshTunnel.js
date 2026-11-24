@@ -1,770 +1,319 @@
 const { Client } = require("ssh2");
 const net = require("net");
-const dotenv = require("dotenv");
 const fs = require("fs");
 const path = require("path");
+require("dotenv").config({ quiet: true });
 
-dotenv.config({ quiet: true });
-
-const DEFAULT_LOCAL_ORACLE_PORT = parseInt(
-  process.env.LOCAL_ORACLE_PORT || "1521",
-  10
-);
-const DEFAULT_LOCAL_POSTGRES_PORT = parseInt(
-  process.env.LOCAL_POSTGRES_PORT || "5433",
-  10
-);
-const REMOTE_ORACLE_HOST = process.env.ORACLE_HOST || "127.0.0.1";
-const REMOTE_ORACLE_PORT = parseInt(process.env.ORACLE_PORT || "1521", 10);
-const REMOTE_POSTGRES_HOST =
-  process.env.REMOTE_POSTGRES_HOST ||
-  process.env.DB_HOST ||
-  process.env.PG_HOST ||
-  "127.0.0.1";
-const REMOTE_POSTGRES_PORT = parseInt(
-  process.env.REMOTE_POSTGRES_PORT || "5432",
-  10
-);
-const MAX_INITIAL_RETRIES = parseInt(
-  process.env.SSH_MAX_INITIAL_RETRIES || "2",
-  10
-);
-const MAX_SSH_RECONNECT_ATTEMPTS = parseInt(
-  process.env.SSH_MAX_RECONNECT_ATTEMPTS || "5",
-  10
-);
-const MAX_BACKOFF_MS = 30000;
-const BACKOFF_JITTER_RATIO = 0.2;
-const IDLE_RETRY_INTERVAL_MS = parseInt(
-  process.env.SSH_IDLE_RETRY_INTERVAL_MS || "120000",
-  10
-);
-const PORT_SCAN_LIMIT = parseInt(
-  process.env.SSH_LOCAL_PORT_SCAN_LIMIT || "10",
-  10
-);
-const DB_TUNNEL_SOCKET_TIMEOUT_MS = parseInt(
-  process.env.SSH_DB_TUNNEL_SOCKET_TIMEOUT_MS || "0",
-  10
-);
-const DB_TUNNEL_KEEPALIVE_MS = parseInt(
-  process.env.SSH_DB_TUNNEL_KEEPALIVE_MS || "30000",
-  10
-);
-const SSH_READY_TIMEOUT_MS = getPositiveInteger(
-  process.env.SSH_READY_TIMEOUT_MS,
-  30000
-);
-const SSH_SOCKET_TIMEOUT_MS = getNonNegativeInteger(
-  process.env.SSH_SOCKET_TIMEOUT_MS || process.env.SSH_CONNECT_TIMEOUT_MS,
-  0
-);
-const SSH_KEEPALIVE_INTERVAL_MS = getPositiveInteger(
-  process.env.SSH_KEEPALIVE_INTERVAL_MS,
-  10000
-);
-const SSH_KEEPALIVE_COUNT_MAX = getPositiveInteger(
-  process.env.SSH_KEEPALIVE_COUNT_MAX,
-  12
-);
-
-let sshClient = null;
-let oracleTunnelServer = null;
-let postgresTunnelServer = null;
-let reconnectTimer = null;
-let reconnectDelayMs = 5000;
-let reconnectAttempts = 0;
-let tunnelInitPromise = null;
-let currentLocalOraclePort = DEFAULT_LOCAL_ORACLE_PORT;
-let currentLocalPostgresPort = DEFAULT_LOCAL_POSTGRES_PORT;
-const tunnelStateListeners = new Set();
-
-function getPositiveInteger(value, fallbackValue) {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackValue;
+function positiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function getNonNegativeInteger(value, fallbackValue) {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallbackValue;
-}
+const readyTimeout = positiveInteger(process.env.SSH_READY_TIMEOUT_MS, 30000);
+const forwardTimeout = positiveInteger(process.env.SSH_FORWARD_TIMEOUT_MS, 10000);
+const initialDelay = positiveInteger(process.env.SSH_RECONNECT_BASE_MS, 5000);
+const burstAttempts = positiveInteger(process.env.SSH_MAX_RECONNECT_ATTEMPTS, 5);
+const initialAttempts = positiveInteger(process.env.SSH_MAX_INITIAL_RETRIES, 2);
+const idleDelay = positiveInteger(process.env.SSH_IDLE_RETRY_INTERVAL_MS, 120000);
+const services = {
+  oracle: {
+    port: positiveInteger(process.env.LOCAL_ORACLE_PORT, 1521),
+    host: process.env.ORACLE_HOST || "127.0.0.1",
+    target: positiveInteger(process.env.ORACLE_PORT, 1521),
+  },
+  postgres: {
+    port: positiveInteger(process.env.LOCAL_POSTGRES_PORT, 5433),
+    host: process.env.REMOTE_POSTGRES_HOST || process.env.DB_HOST || process.env.PG_HOST || "127.0.0.1",
+    target: positiveInteger(process.env.REMOTE_POSTGRES_PORT, 5432),
+  },
+};
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const listeners = new Set();
+let active = null;
+let pending = null;
+let attempt = null;
+let retryTimer = null;
+let failures = 0;
+let stopping = false;
 
-function withJitter(ms) {
-  const jitter = ms * BACKOFF_JITTER_RATIO * (Math.random() * 2 - 1);
-  return Math.max(1000, Math.round(ms + jitter));
-}
-
-function emitTunnelState(type, details = {}) {
-  for (const listener of tunnelStateListeners) {
+function emit(type, session) {
+  for (const listener of listeners) {
     try {
-      listener({ type, ...details });
-    } catch (error) {
-      console.error("[SSH] Tunnel state listener failed:", error.message || error);
+      listener({
+        type,
+        oraclePort: session.oracle.port,
+        postgresPort: session.postgres.port,
+      });
+    } catch {
+      console.error("[SSH] Tunnel state listener failed");
     }
   }
-}
-
-function onTunnelStateChange(listener) {
-  if (typeof listener !== "function") {
-    return () => {};
-  }
-
-  tunnelStateListeners.add(listener);
-  return () => {
-    tunnelStateListeners.delete(listener);
-  };
-}
-
-function resetBackoff() {
-  reconnectDelayMs = 5000;
-}
-
-function isIgnorableCloseError(error) {
-  return error && error.code === "ERR_SERVER_NOT_RUNNING";
-}
-
-function isAddressInUseError(error) {
-  return error && error.code === "EADDRINUSE";
-}
-
-function buildError(value, fallbackMessage) {
-  if (value instanceof Error) {
-    return value;
-  }
-
-  if (typeof value === "string" && value.trim()) {
-    return new Error(value);
-  }
-
-  return new Error(fallbackMessage);
-}
-
-function closeServer(server, serviceName) {
-  return new Promise((resolve) => {
-    if (!server) {
-      resolve();
-      return;
-    }
-
-    let settled = false;
-    const finish = (error) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-
-      if (error && !isIgnorableCloseError(error)) {
-        console.error(`[SSH] Error closing ${serviceName} tunnel server:`, error);
-      }
-
-      resolve();
-    };
-
-    try {
-      server.close(finish);
-      setTimeout(() => finish(), 1000);
-    } catch (error) {
-      finish(error);
-    }
-  });
-}
-
-function endClient(client) {
-  return new Promise((resolve) => {
-    if (!client) {
-      resolve();
-      return;
-    }
-
-    let settled = false;
-    const finish = () => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      resolve();
-    };
-
-    client.once("close", finish);
-    client.once("end", finish);
-    client.once("error", finish);
-
-    try {
-      client.end();
-    } catch (error) {
-      console.error("[SSH] Error ending SSH client:", error);
-      finish();
-      return;
-    }
-
-    setTimeout(finish, 1000);
-  });
-}
-
-async function cleanupTunnelServers() {
-  const activeOracleServer = oracleTunnelServer;
-  const activePostgresServer = postgresTunnelServer;
-
-  oracleTunnelServer = null;
-  postgresTunnelServer = null;
-
-  await Promise.all([
-    closeServer(activeOracleServer, "Oracle"),
-    closeServer(activePostgresServer, "PostgreSQL"),
-  ]);
-}
-
-async function cleanupClient() {
-  const activeClient = sshClient;
-  sshClient = null;
-  await endClient(activeClient);
-}
-
-function isPortAvailable(port) {
-  return new Promise((resolve) => {
-    const probeServer = net.createServer();
-
-    const finish = (available) => {
-      try {
-        probeServer.close(() => resolve(available));
-      } catch {
-        resolve(available);
-      }
-    };
-
-    probeServer.once("error", (error) => {
-      if (!isAddressInUseError(error)) {
-        console.warn(
-          `[SSH] Port probe failed on 127.0.0.1:${port}:`,
-          error.message || error
-        );
-      }
-      resolve(false);
-    });
-
-    probeServer.once("listening", () => finish(true));
-    probeServer.listen(port, "127.0.0.1");
-  });
-}
-
-async function resolveLocalPort(serviceName, preferredPort) {
-  for (let offset = 0; offset <= PORT_SCAN_LIMIT; offset += 1) {
-    const candidatePort = preferredPort + offset;
-    // eslint-disable-next-line no-await-in-loop
-    const available = await isPortAvailable(candidatePort);
-    if (!available) {
-      continue;
-    }
-
-    if (offset > 0) {
-      console.warn(
-        `[SSH] ${serviceName} local port ${preferredPort} is busy; using ${candidatePort} instead`
-      );
-    }
-
-    return candidatePort;
-  }
-
-  throw new Error(
-    `${serviceName} tunnel could not find a free local port starting at ${preferredPort}`
-  );
-}
-
-function createTunnelServer(
-  serviceName,
-  localPort,
-  remoteHost,
-  remotePort,
-  client
-) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-
-    const server = net.createServer((localSocket) => {
-      if (client !== sshClient) {
-        localSocket.destroy();
-        return;
-      }
-
-      console.log(`[SSH] Local connection received for ${serviceName}`);
-
-      // Database pools keep sockets idle between requests. Timing them out at the
-      // tunnel layer causes intermittent "socket hang up"/ECONNRESET in production.
-      localSocket.setTimeout(DB_TUNNEL_SOCKET_TIMEOUT_MS);
-      localSocket.setKeepAlive(true, DB_TUNNEL_KEEPALIVE_MS);
-
-      client.forwardOut(
-        localSocket.localAddress || "127.0.0.1",
-        localSocket.localPort || 0,
-        remoteHost,
-        remotePort,
-        (error, remoteStream) => {
-          if (error) {
-            console.error(
-              `[SSH] SSH forward error for ${serviceName}:`,
-              error.message || error
-            );
-            localSocket.destroy();
-            return;
-          }
-
-          console.log(`[SSH] SSH forward established for ${serviceName}`);
-
-          localSocket.on("error", (socketError) => {
-            if (socketError.code !== "ECONNRESET") {
-              console.error(
-                `[SSH] Local socket error (${serviceName}):`,
-                socketError.message || socketError
-              );
-            }
-            remoteStream.end();
-          });
-
-          localSocket.on("timeout", () => {
-            console.warn(
-              `[SSH] Local socket timeout (${serviceName}), closing connection`
-            );
-            localSocket.destroy();
-            remoteStream.end();
-          });
-
-          remoteStream.on("error", (remoteError) => {
-            if (remoteError.code !== "ECONNRESET") {
-              console.error(
-                `[SSH] Remote stream error (${serviceName}):`,
-                remoteError.message || remoteError
-              );
-            }
-            localSocket.end();
-          });
-
-          remoteStream.on("close", () => {
-            if (!localSocket.destroyed) {
-              localSocket.end();
-            }
-          });
-
-          localSocket.on("close", () => {
-            remoteStream.end();
-          });
-
-          localSocket.pipe(remoteStream).pipe(localSocket);
-        }
-      );
-    });
-
-    server.on("error", (error) => {
-      console.error(`[SSH] ${serviceName} tunnel server error:`, error);
-      if (settled) {
-        return;
-      }
-      settled = true;
-      reject(error);
-    });
-
-    server.on("close", () => {
-      console.warn(`[SSH] ${serviceName} tunnel server closed`);
-    });
-
-    server.on("listening", () => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      console.log(
-        `[SSH] ${serviceName} SSH tunnel established on 127.0.0.1:${localPort}`
-      );
-      resolve(server);
-    });
-
-    server.listen(localPort, "127.0.0.1");
-  });
 }
 
 function getSSHPrivateKey() {
-  if (process.env.SSH_PRIVATE_KEY) {
-    return process.env.SSH_PRIVATE_KEY;
-  }
-
-  if (process.env.SSH_KEY_PATH) {
-    const keyPath = path.resolve(process.env.SSH_KEY_PATH);
-    if (!fs.existsSync(keyPath)) {
-      console.error(`[SSH] SSH key file not found: ${keyPath}`);
-      return null;
-    }
-
-    try {
-      return fs.readFileSync(keyPath, "utf8");
-    } catch (error) {
-      console.error("[SSH] Error reading SSH key file:", error.message || error);
-      return null;
-    }
-  }
-
-  const defaultKeyPath = path.join(
-    process.env.HOME || process.env.USERPROFILE || "",
-    ".ssh",
-    "o2d_tunnel_key"
+  if (process.env.SSH_PRIVATE_KEY) return process.env.SSH_PRIVATE_KEY;
+  const filename = process.env.SSH_KEY_PATH || path.join(
+    process.env.HOME || process.env.USERPROFILE || "", ".ssh", "o2d_tunnel_key"
   );
-
-  if (!fs.existsSync(defaultKeyPath)) {
-    return null;
-  }
-
   try {
-    return fs.readFileSync(defaultKeyPath, "utf8");
-  } catch (error) {
-    console.error(
-      "[SSH] Error reading default SSH key file:",
-      error.message || error
-    );
-    return null;
+    return fs.readFileSync(path.resolve(filename), "utf8");
+  } catch {
+    if (process.env.SSH_KEY_PATH) console.warn("[SSH] Configured SSH key could not be read");
+    return undefined;
   }
 }
 
-async function establishTunnels() {
-  const SSH_HOST = process.env.SSH_HOST;
-  const SSH_PORT = parseInt(process.env.SSH_PORT || "22", 10);
-  const SSH_USER = process.env.SSH_USER;
-  const SSH_PASSWORD = process.env.SSH_PASSWORD;
-  const SSH_PRIVATE_KEY = getSSHPrivateKey();
-
-  console.log("[SSH] Creating SSH tunnel to", SSH_HOST);
-  console.log("[SSH] SSH User:", SSH_USER ? "***" : "NOT SET");
-  console.log("[SSH] SSH Port:", SSH_PORT);
-  console.log(
-    "[SSH] Auth Method:",
-    SSH_PRIVATE_KEY ? "SSH Key" : SSH_PASSWORD ? "Password" : "NOT SET"
-  );
-
-  if (!SSH_HOST) {
-    throw new Error("SSH_HOST environment variable is required");
-  }
-  if (!SSH_USER) {
-    throw new Error("SSH_USER environment variable is required");
-  }
-  if (!SSH_PRIVATE_KEY && !SSH_PASSWORD) {
-    throw new Error(
-      "Either SSH_PRIVATE_KEY, SSH_KEY_PATH, or SSH_PASSWORD environment variable is required"
-    );
-  }
-
-  await cleanupTunnelServers();
-  await cleanupClient();
-
+function bind(server, port) {
   return new Promise((resolve, reject) => {
-    const client = new Client();
-    let settled = false;
-
-    const settleSuccess = (value) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      resetBackoff();
-      reconnectAttempts = 0;
-      emitTunnelState("connected", {
-        oraclePort: currentLocalOraclePort,
-        postgresPort: currentLocalPostgresPort,
-      });
-      resolve(value);
-    };
-
-    const settleFailure = async (error) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-
-      if (client === sshClient) {
-        await cleanupTunnelServers();
-        await cleanupClient();
-      } else {
-        await endClient(client);
-      }
-
-      reject(error);
-    };
-
-    const handleDisconnect = (label) => async (value) => {
-      const error = buildError(value, `SSH ${label}`);
-
-      if (label === "connection error") {
-        console.error("[SSH] SSH connection error:", error);
-      } else {
-        console.error(`[SSH] SSH ${label}:`, error.message || error);
-      }
-
-      if (client !== sshClient) {
-        return;
-      }
-
-      if (!settled) {
-        await settleFailure(error);
-        return;
-      }
-
-      emitTunnelState("disconnected", {
-        reason: error.message || String(error),
-      });
-      await cleanupTunnelServers();
-      await cleanupClient();
-      void scheduleReconnect();
-    };
-
-    client.on("ready", () => {
-      void (async () => {
-        if (client !== sshClient || settled) {
-          return;
-        }
-
-        console.log("[SSH] SSH Client ready");
-
-        try {
-          const oraclePort = await resolveLocalPort(
-            "Oracle",
-            currentLocalOraclePort || DEFAULT_LOCAL_ORACLE_PORT
-          );
-          const oracleServer = await createTunnelServer(
-            "Oracle",
-            oraclePort,
-            REMOTE_ORACLE_HOST,
-            REMOTE_ORACLE_PORT,
-            client
-          );
-
-          if (client !== sshClient || settled) {
-            await closeServer(oracleServer, "Oracle");
-            return;
-          }
-
-          oracleTunnelServer = oracleServer;
-          currentLocalOraclePort = oraclePort;
-
-          const postgresPort = await resolveLocalPort(
-            "PostgreSQL",
-            currentLocalPostgresPort || DEFAULT_LOCAL_POSTGRES_PORT
-          );
-          const postgresServer = await createTunnelServer(
-            "PostgreSQL",
-            postgresPort,
-            REMOTE_POSTGRES_HOST,
-            REMOTE_POSTGRES_PORT,
-            client
-          );
-
-          if (client !== sshClient || settled) {
-            await closeServer(postgresServer, "PostgreSQL");
-            return;
-          }
-
-          postgresTunnelServer = postgresServer;
-          currentLocalPostgresPort = postgresPort;
-
-          settleSuccess({
-            sshClient: client,
-            oracleTunnelServer,
-            postgresTunnelServer,
-          });
-        } catch (error) {
-          console.error("[SSH] Failed to establish tunnels:", error);
-          await settleFailure(error);
-        }
-      })();
-    });
-
-    client.on("error", (error) => {
-      void handleDisconnect("connection error")(error);
-    });
-    client.on("end", () => {
-      void handleDisconnect("connection ended")("SSH connection ended");
-    });
-    client.on("close", (hadError) => {
-      const message = hadError
-        ? "SSH connection closed after error"
-        : "SSH connection closed";
-      void handleDisconnect("connection closed")(message);
-    });
-
-    client.on(
-      "keyboard-interactive",
-      (name, instructions, lang, prompts, finish) => {
-        console.log(
-          "[SSH] keyboard-interactive auth requested. Prompts:",
-          prompts.map((prompt) => prompt.prompt)
-        );
-        if (SSH_PASSWORD) {
-          finish(prompts.map(() => SSH_PASSWORD));
-          return;
-        }
-        finish([]);
-      }
-    );
-
-    const sshConfig = {
-      host: SSH_HOST,
-      port: SSH_PORT,
-      username: SSH_USER,
-      readyTimeout: SSH_READY_TIMEOUT_MS,
-      keepaliveInterval: SSH_KEEPALIVE_INTERVAL_MS,
-      keepaliveCountMax: SSH_KEEPALIVE_COUNT_MAX,
-      timeout: SSH_SOCKET_TIMEOUT_MS,
-      algorithms: {
-        kex: [
-          "ecdh-sha2-nistp256",
-          "ecdh-sha2-nistp384",
-          "ecdh-sha2-nistp521",
-          "diffie-hellman-group14-sha256",
-          "diffie-hellman-group-exchange-sha256",
-        ],
-        cipher: ["aes128-ctr", "aes192-ctr", "aes256-ctr"],
-      },
-    };
-
-    if (SSH_PRIVATE_KEY) {
-      sshConfig.privateKey = SSH_PRIVATE_KEY;
-      console.log("[SSH] Using SSH key authentication");
-    } else {
-      sshConfig.password = SSH_PASSWORD;
-      sshConfig.tryKeyboard = true;
-      console.log("[SSH] Using password authentication");
+    function cleanup() {
+      server.off("listening", ready);
+      server.off("error", failed);
+      server.off("close", canceled);
     }
-
-    sshClient = client;
-    console.log(`[SSH] Connecting to SSH with user: ${SSH_USER}`);
-    client.connect(sshConfig);
+    function ready() {
+      cleanup();
+      resolve();
+    }
+    function failed(error) {
+      cleanup();
+      reject(error);
+    }
+    function canceled() {
+      failed(new Error("SSH forward listener closed during setup"));
+    }
+    server.once("listening", ready);
+    server.once("error", failed);
+    server.once("close", canceled);
+    try {
+      server.listen(port, "127.0.0.1");
+    } catch (error) {
+      failed(error);
+    }
   });
 }
 
-async function scheduleReconnect() {
-  if (reconnectTimer || tunnelInitPromise) {
-    return;
-  }
-
-  if (reconnectAttempts >= MAX_SSH_RECONNECT_ATTEMPTS) {
-    console.error(
-      `[SSH] SSH failed ${MAX_SSH_RECONNECT_ATTEMPTS} times in a row; backing off to a slow retry every ${IDLE_RETRY_INTERVAL_MS / 1000}s.`
-    );
-    console.error(
-      "[SSH] Please check your network, SSH credentials, or remote server status."
-    );
-
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      reconnectAttempts = 0;
-      resetBackoff();
-      void initSSHTunnel().catch((error) => {
-        console.error("[SSH] Idle reconnect attempt failed:", error.message || error);
-        void scheduleReconnect();
-      });
-    }, IDLE_RETRY_INTERVAL_MS);
-    return;
-  }
-
-  const waitMs = withJitter(Math.min(reconnectDelayMs, MAX_BACKOFF_MS));
-  reconnectAttempts += 1;
-
-  console.warn(
-    `[SSH] Scheduling SSH reconnect (${reconnectAttempts}/${MAX_SSH_RECONNECT_ATTEMPTS}) in ${Math.round(waitMs / 1000)}s...`
-  );
-
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    reconnectDelayMs = Math.min(reconnectDelayMs * 2, MAX_BACKOFF_MS);
-    void initSSHTunnel().catch((error) => {
-      console.error("[SSH] Reconnect attempt failed:", error.message || error);
-      void scheduleReconnect();
+async function openForward(session, service) {
+  const server = net.createServer((socket) => {
+    session.sockets.add(socket);
+    let stream;
+    const timer = setTimeout(() => socket.destroy(), forwardTimeout);
+    socket.on("error", () => socket.destroy());
+    socket.once("close", () => {
+      clearTimeout(timer);
+      session.sockets.delete(socket);
+      stream?.destroy();
     });
-  }, waitMs);
+    socket.setKeepAlive(true, positiveInteger(process.env.SSH_DB_TUNNEL_KEEPALIVE_MS, 30000));
+    const idleTimeout = positiveInteger(process.env.SSH_DB_TUNNEL_SOCKET_TIMEOUT_MS, 0);
+    if (idleTimeout) socket.setTimeout(idleTimeout, () => socket.destroy());
+
+    if (active !== session || session.forwarding >= 100) {
+      socket.destroy();
+      return;
+    }
+    session.forwarding += 1;
+    try {
+      session.client.forwardOut(socket.remoteAddress, socket.remotePort, service.host,
+        service.target, (error, channel) => {
+          session.forwarding -= 1;
+          clearTimeout(timer);
+          if (error) {
+            socket.destroy();
+            return;
+          }
+          stream = channel;
+          stream.on("error", () => socket.destroy());
+          stream.once("close", () => socket.destroy());
+          if (socket.destroyed || active !== session) {
+            stream.destroy();
+            return;
+          }
+          socket.pipe(stream).pipe(socket);
+        });
+    } catch {
+      session.forwarding -= 1;
+      socket.destroy();
+    }
+  });
+
+  session.servers.add(server);
+  const scanLimit = process.env.SSH_LOCAL_PORT_SCAN_LIMIT === "0"
+    ? 0
+    : positiveInteger(process.env.SSH_LOCAL_PORT_SCAN_LIMIT, 10);
+  for (let offset = 0; offset <= scanLimit; offset += 1) {
+    if (session.closed) throw new Error("SSH session closed during listener setup");
+    const port = service.port + offset;
+    try {
+      await bind(server, port);
+      server.on("error", session.fail);
+      server.on("close", session.fail);
+      return { server, port };
+    } catch (error) {
+      if (error.code !== "EADDRINUSE") throw error;
+    }
+  }
+  throw Object.assign(new Error("No available SSH forwarding port"), { code: "EADDRINUSE" });
 }
 
-async function initSSHTunnel() {
-  if (isTunnelActive()) {
-    console.log("[SSH] SSH tunnel already established, reusing existing connection");
-    return { sshClient, oracleTunnelServer, postgresTunnelServer };
-  }
+function dispose(session) {
+  session.closed = true;
+  for (const server of session.servers) server.close();
+  for (const socket of session.sockets) socket.destroy();
+  // Destroy the transport even during a stalled SSH handshake.
+  session.transport.destroy();
+}
 
-  if (tunnelInitPromise) {
-    return tunnelInitPromise;
-  }
-
-  tunnelInitPromise = (async () => {
-    let attempt = 1;
-
-    while (attempt <= MAX_INITIAL_RETRIES) {
-      try {
-        return await establishTunnels();
-      } catch (error) {
-        console.error(
-          `[SSH] SSH tunnel attempt ${attempt} failed:`,
-          error.message || error
-        );
-
-        if (attempt >= MAX_INITIAL_RETRIES) {
-          throw error;
-        }
-
-        const waitMs = withJitter(Math.min(5000 * attempt, MAX_BACKOFF_MS));
-        console.log(`[SSH] Retrying SSH tunnel in ${Math.round(waitMs / 1000)}s...`);
-        await delay(waitMs);
-        attempt += 1;
-      }
+function establish() {
+  return new Promise((resolve, reject) => {
+    const host = process.env.SSH_HOST;
+    const username = process.env.SSH_USER;
+    const password = process.env.SSH_PASSWORD;
+    const privateKey = getSSHPrivateKey();
+    if (!host || !username || (!password && !privateKey)) {
+      reject(Object.assign(new Error("SSH configuration incomplete"), { code: "SSH_CONFIG" }));
+      return;
     }
 
-    throw new Error("SSH tunnel initialization exhausted all retries");
-  })();
+    const client = new Client();
+    const transport = new net.Socket();
+    const session = { client, transport, servers: new Set(), sockets: new Set(), closed: false, forwarding: 0 };
+    attempt = session;
+    let timer;
 
-  try {
-    return await tunnelInitPromise;
-  } finally {
-    tunnelInitPromise = null;
-  }
+    session.fail = (error) => {
+      if (session.closed) return;
+      clearTimeout(timer);
+      const wasActive = active === session;
+      if (wasActive) active = null;
+      dispose(session);
+      if (wasActive) {
+        emit("disconnected", session);
+        if (!stopping) console.warn("[SSH] Tunnel disconnected");
+        scheduleReconnect();
+      } else {
+        reject(error || new Error("SSH connection closed"));
+      }
+    };
+
+    transport.on("error", session.fail);
+    transport.once("close", () => session.fail());
+    client.on("error", session.fail);
+    client.once("end", () => session.fail());
+    client.once("close", () => session.fail());
+    client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+      finish(password ? prompts.map(() => password) : []);
+    });
+
+    client.once("ready", async () => {
+      try {
+        session.oracle = await openForward(session, services.oracle);
+        session.postgres = await openForward(session, services.postgres);
+        if (session.closed) return;
+        clearTimeout(timer);
+        active = session;
+        failures = 0;
+        console.info("[SSH] Database tunnels ready");
+        emit("connected", session);
+        resolve(connectionResult(session));
+      } catch (error) {
+        session.fail(error);
+      }
+    });
+
+    timer = setTimeout(() => session.fail(Object.assign(
+      new Error("SSH connection timed out"), { code: "SSH_TIMEOUT" }
+    )), readyTimeout);
+
+    transport.once("connect", () => {
+      try {
+        const socketTimeout = positiveInteger(process.env.SSH_SOCKET_TIMEOUT_MS || process.env.SSH_CONNECT_TIMEOUT_MS, 0);
+        if (socketTimeout) transport.setTimeout(socketTimeout, () => session.fail());
+        client.connect({
+          sock: transport,
+          host,
+          username,
+          readyTimeout,
+          keepaliveInterval: positiveInteger(process.env.SSH_KEEPALIVE_INTERVAL_MS, 10000),
+          keepaliveCountMax: positiveInteger(process.env.SSH_KEEPALIVE_COUNT_MAX, 12),
+          algorithms: {
+            kex: [
+              "ecdh-sha2-nistp256", "ecdh-sha2-nistp384", "ecdh-sha2-nistp521",
+              "diffie-hellman-group14-sha256", "diffie-hellman-group-exchange-sha256",
+            ],
+            cipher: ["aes128-ctr", "aes192-ctr", "aes256-ctr"],
+          },
+          ...(privateKey ? { privateKey } : { password, tryKeyboard: true }),
+        });
+      } catch (error) {
+        session.fail(error);
+      }
+    });
+    try {
+      transport.connect(positiveInteger(process.env.SSH_PORT, 22), host);
+    } catch (error) {
+      session.fail(error);
+    }
+  });
+}
+
+function scheduleReconnect() {
+  if (stopping || active || pending || retryTimer) return;
+  const fastAttempts = initialAttempts + burstAttempts - 1;
+  const baseDelay = failures >= fastAttempts
+    ? idleDelay
+    : Math.min(initialDelay * 2 ** Math.max(0, failures - 1), 30000);
+  const delay = Math.max(100, Math.round(baseDelay * (0.8 + Math.random() * 0.4)));
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    void initSSHTunnel().catch(() => {});
+  }, delay);
+  retryTimer.unref();
+}
+
+function connectionResult(session) {
+  return {
+    sshClient: session.client,
+    oracleTunnelServer: session.oracle.server,
+    postgresTunnelServer: session.postgres.server,
+  };
+}
+
+function initSSHTunnel() {
+  if (active) return Promise.resolve(connectionResult(active));
+  if (pending) return pending;
+  if (stopping || retryTimer) return Promise.reject(new Error("SSH tunnel unavailable"));
+
+  pending = establish().catch((error) => {
+    if (!stopping) {
+      failures += 1;
+      console.warn("[SSH] Connection attempt failed:", error.code || error.level || "SSH_ERROR");
+    }
+    throw error;
+  }).finally(() => {
+    pending = null;
+    attempt = null;
+    scheduleReconnect();
+  });
+  return pending;
 }
 
 async function closeSSHTunnel() {
-  console.log("[SSH] Closing SSH tunnel...");
-
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-
-  resetBackoff();
-  reconnectAttempts = 0;
-
-  await cleanupTunnelServers();
-  await cleanupClient();
-
-  console.log("[SSH] SSH tunnel closed");
-}
-
-function getLocalPostgresPort() {
-  return currentLocalPostgresPort;
-}
-
-function getLocalOraclePort() {
-  return currentLocalOraclePort;
-}
-
-function isTunnelActive() {
-  return Boolean(
-    sshClient &&
-      oracleTunnelServer &&
-      oracleTunnelServer.listening &&
-      postgresTunnelServer &&
-      postgresTunnelServer.listening
-  );
+  stopping = true;
+  clearTimeout(retryTimer);
+  retryTimer = null;
+  (active || attempt)?.fail();
+  await pending?.catch(() => {});
 }
 
 module.exports = {
   initSSHTunnel,
   closeSSHTunnel,
-  getLocalPostgresPort,
-  getLocalOraclePort,
-  isTunnelActive,
-  onTunnelStateChange,
+  getLocalPostgresPort: () => active?.postgres.port || services.postgres.port,
+  getLocalOraclePort: () => active?.oracle.port || services.oracle.port,
+  getTunnelSession: () => active,
+  isTunnelActive: () => Boolean(active),
+  onTunnelStateChange(listener) {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  },
 };
